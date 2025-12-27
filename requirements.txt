@@ -1,0 +1,22 @@
+# conda create -n rm python=3.11
+# conda activate rm
+# pip install torch==2.6.0+cu124 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# pip install ../pkgs/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp311-cp311-linux_x86_64.whl
+# pip install ../pkgs/flashinfer_python-0.2.2.post1+cu124torch2.6-cp38-abi3-linux_x86_64.whl
+# pip install -r requirements.txt
+
+einops
+ipykernel
+matplotlib
+numpy<2.0.0
+openai
+pandas
+peft
+pot
+pyyaml
+safetensors
+scikit-learn
+scipy
+seaborn
+transformers==4.55.4
+vllm==0.8.5.post1
