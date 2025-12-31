@@ -6,7 +6,7 @@ import yaml
 from collections import defaultdict
 import numpy as np
 from safetensors.torch import load_file
-from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, r2_score, log_loss
 
 
 def seed_everything(seed):
@@ -262,6 +262,34 @@ def refine_dict(data):
         else:
             _data[k] = v
     return _data
+
+
+def compute_nll(y_true, y_pred_proba):
+    """计算 Negative Log Likelihood (二分类)"""
+    return log_loss(y_true, y_pred_proba)
+
+
+def compute_ndcg_binary(y_true, y_pred):
+    """计算二分类场景下的 NDCG（全量数据）"""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    order = np.argsort(-y_pred)
+    y_true_sorted = y_true[order]
+    dcg = np.sum(y_true_sorted / np.log2(np.arange(2, len(y_true_sorted) + 2)))
+    ideal_order = np.argsort(-y_true)
+    y_true_ideal = y_true[ideal_order]
+    idcg = np.sum(y_true_ideal / np.log2(np.arange(2, len(y_true_ideal) + 2)))
+    return dcg / idcg if idcg > 0 else 0.0
+
+
+def compute_recall_binary(y_true, y_pred_proba, threshold=0.5):
+    """计算二分类 Recall = TP / (TP + FN)"""
+    y_true = np.asarray(y_true)
+    y_pred_proba = np.asarray(y_pred_proba)
+    y_pred_binary = (y_pred_proba >= threshold).astype(int)
+    tp = np.sum((y_pred_binary == 1) & (y_true == 1))
+    fn = np.sum((y_pred_binary == 0) & (y_true == 1))
+    return tp / (tp + fn) if (tp + fn) > 0 else 0.0
 
 
 if __name__ == "__main__":

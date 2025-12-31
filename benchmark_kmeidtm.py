@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict
+from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary
 
 
 class Model(nn.Module):
@@ -84,7 +84,7 @@ def parse_arguments():
         "desc": "foo",
         "is_training": True,
         "output_dir": f"./results/cache/kmeidtm/{pre_args.data_name}",
-        "data_root": "../embeddings/biased_noisy",
+        "data_root": "../embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "kmeidtm",
         "data_name": pre_args.data_name,
@@ -103,8 +103,6 @@ def parse_arguments():
         "rerun": False,
         "monitor_on": "train",
         "binary": True,
-        "r10": 0.1,
-        "r01": 0.2,
         "use_tqdm": True,
         "lam": 0.3,    # Lambda for manifold regularization
         "gamma": 0.1,  # Sigma for RBF kernel
@@ -161,8 +159,6 @@ def parse_arguments():
     parser.add_argument("--rerun", type=str2bool, help="Whether to rerun the experiment")
     parser.add_argument("--monitor_on", type=str, help="Whether to monitor on train or test set")
     parser.add_argument("--binary", type=str2bool, help="Whether to use binary or continuous rewards")
-    parser.add_argument("--r10", type=float, help="Noise ratio for positive to negative")
-    parser.add_argument("--r01", type=float, help="Noise ratio for negative to positive")
     parser.add_argument("--use_tqdm", type=str2bool, help="Whether to use tqdm progress bar")
     parser.add_argument("--lam", type=float, help="Lambda for manifold regularization")
     parser.add_argument("--gamma", type=float, help="gamma for RBF kernel")
@@ -392,7 +388,7 @@ def main():
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
-        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_{args.r10}_{args.r01}.safetensors"
+        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train_binary", "mask_train", "X_val", "y_val_binary", "mask_val", "X_test", "y_test_binary"])
     else:
@@ -476,6 +472,12 @@ def main():
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
         "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
+        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on test": compute_nll(y_test_cpu, y_test_pred),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
+        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy
     print("\n--- Final Performance ---")

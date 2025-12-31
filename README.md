@@ -1,6 +1,6 @@
 # Causal Reward Model
 
-基于因果推断的奖励模型研究框架，用于研究选择偏差(Selection Bias)和标签噪声(Label Noise)对奖励模型的影响，以及各种去偏方法的效果。
+基于因果推断的奖励模型研究框架，用于研究选择偏差(Selection Bias)和 PU Learning（Positive-Unlabeled Learning，隐反馈/部分标签学习）对奖励模型的影响，以及各种去偏方法的效果。
 
 ## 项目结构
 
@@ -8,7 +8,7 @@
 causal-rm/
 ├── embeddings/                   # Embedding 存储目录
 │   ├── normal/                   # Stage 1 输出 (原始 embedding)
-│   └── biased_noisy/             # Stage 2 输出 (含偏差/噪声)
+│   └── biased_pu/                # Stage 2 输出 (含偏差/PU)
 │
 ├── rawdata/                      # 原始数据集目录 (HuggingFace datasets 格式)
 │   ├── hs/                       # HelpSteer 数据集
@@ -18,8 +18,8 @@ causal-rm/
 ├── prepare.py                    # Stage 1: Embedding 生成
 ├── data_prepare.sh               # Stage 1 批处理脚本
 │
-├── simulate_bias_noisy.py        # Stage 2: 偏差/噪声模拟
-├── simulate_bias_noisy.sh        # Stage 2 批处理脚本
+├── simulate_bias_pu.py           # Stage 2: 偏差/PU 模拟
+├── simulate_bias_pu.sh           # Stage 2 批处理脚本
 │
 ├── benchmark_*.py                # Stage 3: 各种去偏方法的 benchmark
 │   ├── benchmark_naive.py        #   - Naive (无去偏)
@@ -80,10 +80,10 @@ pip install -r requirements.txt
 │  {model_name}_{data_name}_{train/test}.safetensors   │   Embeddings
 └──────────┬───────────────────────────────────────────┘
            │
-           ▼  Stage 2: simulate_bias_noisy.sh → simulate_bias_noisy.py
+           ▼  Stage 2: simulate_bias_pu.sh → simulate_bias_pu.py
            │
 ┌──────────────────────────────────────────────────────┐
-│  {model_name}_{data_name}_{alpha}_{r10}_{r01}.safetensors  │  Biased + Noisy
+│  {model_name}_{data_name}_{alpha}_pu.safetensors     │  Biased + PU
 └──────────┬───────────────────────────────────────────┘
            │
            ▼  Stage 3: benchmark_*.py
@@ -145,27 +145,25 @@ bash data_prepare.sh
 
 ---
 
-## Stage 2: 偏差/噪声模拟
+## Stage 2: 偏差/PU 模拟
 
-在 embedding 数据上模拟选择偏差和标签噪声。
+在 embedding 数据上模拟选择偏差和 PU Learning 场景。
 
 ### 脚本
 
 ```bash
-bash simulate_bias_noisy.sh
+bash simulate_bias_pu.sh
 ```
 
-### 参数 (`simulate_bias_noisy.py`)
+### 参数 (`simulate_bias_pu.py`)
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--model_name` | 模型名称 | `FsfairX-LLaMA3-RM-v0.1` |
 | `--data_name` | 数据集名称 | `saferlhf` |
 | `--data_root` | embedding 输入目录 | `./embeddings/normal` |
-| `--output_dir` | 输出目录 | `./embeddings/biased_noisy` |
+| `--output_dir` | 输出目录 | `./embeddings/biased_pu` |
 | `--alpha` | 选择偏差强度 (越小偏差越强) | `0.5` |
-| `--r10` | 正→负 翻转概率 | `0.1` |
-| `--r01` | 负→正 翻转概率 | `0.1` |
 
 ### 输入
 
@@ -177,7 +175,7 @@ bash simulate_bias_noisy.sh
 ### 输出
 
 ```
-{output_dir}/{model_name}_{data_name}_{alpha}_{r10}_{r01}.safetensors
+{output_dir}/{model_name}_{data_name}_{alpha}_pu.safetensors
 
 # 格式:
 {
@@ -191,30 +189,30 @@ bash simulate_bias_noisy.sh
     "y_val": Tensor[N_val],
     "y_test": Tensor[N_test],
 
-    # 二值标签 (含噪声)
-    "y_train_binary": Tensor[N_train],  # 0/1, 在 mask=True 处有噪声
+    # 二值标签 (PU 场景)
+    "y_train_binary": Tensor[N_train],  # 0/1, mask=False 的正样本被标记为 0
     "y_val_binary": Tensor[N_val],
-    "y_test_binary": Tensor[N_test],    # 无噪声 (用于评估)
+    "y_test_binary": Tensor[N_test],    # 完整标签 (用于评估)
 
     # 倾向性分数 (用于 IPS 等去偏方法)
     "propensity_train": Tensor[N_train],
     "propensity_val": Tensor[N_val],
 
-    # 观察掩码 (True = 被观察到)
+    # 观察掩码 (True = 被观察到/标记为正)
     "mask_train": Tensor[N_train],
     "mask_val": Tensor[N_val],
 }
 ```
 
-### 偏差模拟原理
+### PU Learning 模拟原理
 
 - **选择偏差**: 低奖励样本的 propensity score 更低，更不容易被"观察到"
   - `propensity = alpha^(max_reward - reward)`
   - `alpha=0.5` 时偏差较弱，`alpha=0.01` 时偏差很强
 
-- **标签噪声**: 对被观察到的样本按概率翻转二值标签
-  - `r10`: P(label 1→0)
-  - `r01`: P(label 0→1)
+- **PU Learning**: 只有部分正样本被标记，未被标记的正样本与负样本混在一起
+  - mask=True: 样本被观察到，标签可信
+  - mask=False: 样本未被观察到，正样本被标记为 0（隐反馈）
 
 ---
 
@@ -226,13 +224,13 @@ bash simulate_bias_noisy.sh
 
 ```bash
 # Naive baseline (无去偏)
-python benchmark_naive.py --data_name saferlhf --alpha 0.1 --r10 0.2 --r01 0.1
+python benchmark_naive.py --data_name saferlhf --alpha 0.1
 
 # IPS (Inverse Propensity Scoring)
-python benchmark_ips.py --data_name saferlhf --alpha 0.1 --r10 0.2 --r01 0.1
+python benchmark_ips.py --data_name saferlhf --alpha 0.1
 
 # Doubly Robust
-python benchmark_dr.py --data_name saferlhf --alpha 0.1 --r10 0.2 --r01 0.1
+python benchmark_dr.py --data_name saferlhf --alpha 0.1
 ```
 
 ### 通用参数 (`benchmark_*.py`)
@@ -240,11 +238,9 @@ python benchmark_dr.py --data_name saferlhf --alpha 0.1 --r10 0.2 --r01 0.1
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `--data_name` | 数据集名称 | `saferlhf` |
-| `--data_root` | 数据目录 | `./embeddings/biased_noisy` |
+| `--data_root` | 数据目录 | `./embeddings/biased_pu` |
 | `--model_name` | 模型名称 | `FsfairX-LLaMA3-RM-v0.1` |
 | `--alpha` | 偏差强度 | `0.5` |
-| `--r10` | 噪声率 (1→0) | `0.1` |
-| `--r01` | 噪声率 (0→1) | `0.1` |
 | `--output_dir` | 结果输出目录 | `./results/cache/{method}/{data_name}` |
 
 ### 去偏方法一览
@@ -257,10 +253,10 @@ python benchmark_dr.py --data_name saferlhf --alpha 0.1 --r10 0.2 --r01 0.1
 | MT-IPS | 偏差校正 | 多任务 IPS |
 | MT-DR | 偏差校正 | 多任务 DR |
 | SDR | 偏差校正 | 自去偏 |
-| Co-Teaching | 噪声校正 | 双网络互教 |
-| DivideMix | 噪声校正 | 混合样本学习 |
-| CVIB | 噪声校正 | 变分信息瓶颈 |
-| LabelWave | 噪声校正 | 标签波动检测 |
+| Co-Teaching | PU/噪声校正 | 双网络互教 |
+| DivideMix | PU/噪声校正 | 混合样本学习 |
+| CVIB | PU/噪声校正 | 变分信息瓶颈 |
+| LabelWave | PU/噪声校正 | 标签波动检测 |
 
 ---
 
@@ -273,8 +269,8 @@ python benchmark_dr.py --data_name saferlhf --alpha 0.1 --r10 0.2 --r01 0.1
 # 2. 生成 Embedding
 bash data_prepare.sh
 
-# 3. 模拟偏差和噪声
-bash simulate_bias_noisy.sh
+# 3. 模拟偏差和 PU Learning
+bash simulate_bias_pu.sh
 
 # 4. 运行 benchmark
 python benchmark_naive.py --data_name ufb --alpha 0.1
