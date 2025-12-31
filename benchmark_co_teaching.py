@@ -43,7 +43,7 @@ def parse_arguments():
         "desc": "foo",
         "is_training": True,
         "output_dir": f"./results/cache/co_teaching/{pre_args.data_name}",
-        "data_root": "../embeddings/biased_pu",
+        "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "co_teaching",
         "data_name": pre_args.data_name,

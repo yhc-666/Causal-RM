@@ -61,7 +61,7 @@ class Model(nn.Module):
 def parse_arguments():
     # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
-    pre_parser.add_argument("--data_name", type=str, default="saferlhf")
+    pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
     # Base defaults if dataset not listed
@@ -69,11 +69,11 @@ def parse_arguments():
         "desc": "foo",
         "is_training": True,
         "output_dir": f"./results/cache/dr/{pre_args.data_name}",
-        "data_root": "../embeddings/biased_pu",
+        "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "dr",
         "data_name": pre_args.data_name,
-        "alpha": 0.5,
+        "alpha": 0.1,
         "lr": 0.0002,
         "clip_min": 0.1,
         "num_epochs": 600,
@@ -97,7 +97,7 @@ def parse_arguments():
 
     dataset_defaults = {
         "saferlhf": {
-            "alpha": 0.2,
+            "alpha": 0.1,
             "batch_size": 512,
             "lr": 0.0005,
         },
