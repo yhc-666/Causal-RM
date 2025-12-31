@@ -31,3 +31,5 @@ dist/
 # IDEs
 .idea/
 .vscode/
+
+rawdata.zip

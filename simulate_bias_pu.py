@@ -1,3 +1,55 @@
+"""
+Simulate Selection Bias with PU Learning for Causal Reward Model Research
+
+This script processes reward model embeddings to simulate:
+1. Selection bias via propensity-based sampling (lower reward -> lower observation probability)
+2. PU (Positive-Unlabeled) Learning setup: unobserved samples are treated as unlabeled (y=0)
+
+=== INPUT ===
+Files:
+    - {data_root}/{model_name}_{data_name}_train.safetensors
+    - {data_root}/{model_name}_{data_name}_test.safetensors
+
+Input format (safetensors):
+    {
+        "embeddings": Tensor[N, D],  # N samples, D-dimensional embeddings
+        "labels": Tensor[N],         # Continuous reward labels
+    }
+
+=== OUTPUT ===
+File:
+    - {output_dir}/{model_name}_{data_name}_{alpha}_pu.safetensors
+
+Output format (safetensors):
+    {
+        # Embeddings (80/20 train/val split from train file, test from test file)
+        "X_train": Tensor[N_train, D],
+        "X_val": Tensor[N_val, D],
+        "X_test": Tensor[N_test, D],
+
+        # Original continuous labels
+        "y_train": Tensor[N_train],
+        "y_val": Tensor[N_val],
+        "y_test": Tensor[N_test],
+
+        # Binary labels (PU setting for train/val)
+        "y_train_binary": Tensor[N_train],  # observed: true label (0/1), unobserved: 0 (unlabeled)
+        "y_val_binary": Tensor[N_val],      # observed: true label (0/1), unobserved: 0 (unlabeled)
+        "y_test_binary": Tensor[N_test],    # 0 or 1, clean (no bias)
+
+        # Propensity scores for bias correction (e.g., IPS)
+        "propensity_train": Tensor[N_train],  # P(observed | features)
+        "propensity_val": Tensor[N_val],
+
+        # Observation masks (True = observed/sampled)
+        "mask_train": Tensor[N_train],  # Boolean
+        "mask_val": Tensor[N_val],      # Boolean
+    }
+
+=== PARAMETERS ===
+    --alpha: Controls selection bias strength (lower = stronger bias toward high rewards)
+"""
+
 import os
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,49 +93,50 @@ def binarize_labels(labels, data_name):
     return binary_labels
 
 
-def add_noise_to_labels(labels, noise_rates, seed=0):
-    """
-    Add noise to binary labels by flipping them.
-    
-    Args:
-        labels: Binary labels (0 or 1)
-        noise_rates: [rate_pos_to_neg, rate_neg_to_pos] - probabilities of flipping
-        seed: Random seed
-    
-    Returns:
-        noisy_labels: Labels with noise added
-    """
-    np.random.seed(seed)
-    
-    labels_noisy = labels.copy()
-    
-    # Find positive and negative samples
-    pos_mask = labels == 1
-    neg_mask = labels == 0
-    
-    pos_count = np.sum(pos_mask)
-    neg_count = np.sum(neg_mask)
-    
-    print(f"Before noise: {neg_count} negative, {pos_count} positive")
-    
-    # Generate random flips
-    if pos_count > 0:
-        pos_flip = np.random.binomial(1, noise_rates[0], pos_count)
-        labels_noisy[pos_mask] = labels_noisy[pos_mask] * (1 - pos_flip)  # positive to negative
-        pos_flipped = np.sum(pos_flip)
-        print(f"Flipped {pos_flipped} positive samples to negative (rate: {noise_rates[0]})")
-    
-    if neg_count > 0:
-        neg_flip = np.random.binomial(1, noise_rates[1], neg_count)
-        labels_noisy[neg_mask] = labels_noisy[neg_mask] + neg_flip * (1 - labels_noisy[neg_mask])  # negative to positive
-        neg_flipped = np.sum(neg_flip)
-        print(f"Flipped {neg_flipped} negative samples to positive (rate: {noise_rates[1]})")
-    
-    final_pos_count = np.sum(labels_noisy == 1)
-    final_neg_count = np.sum(labels_noisy == 0)
-    print(f"After noise: {final_neg_count} negative, {final_pos_count} positive")
-    
-    return labels_noisy
+# NOTE: Label noise functionality removed - now using PU Learning instead
+# def add_noise_to_labels(labels, noise_rates, seed=0):
+#     """
+#     Add noise to binary labels by flipping them.
+#
+#     Args:
+#         labels: Binary labels (0 or 1)
+#         noise_rates: [rate_pos_to_neg, rate_neg_to_pos] - probabilities of flipping
+#         seed: Random seed
+#
+#     Returns:
+#         noisy_labels: Labels with noise added
+#     """
+#     np.random.seed(seed)
+#
+#     labels_noisy = labels.copy()
+#
+#     # Find positive and negative samples
+#     pos_mask = labels == 1
+#     neg_mask = labels == 0
+#
+#     pos_count = np.sum(pos_mask)
+#     neg_count = np.sum(neg_mask)
+#
+#     print(f"Before noise: {neg_count} negative, {pos_count} positive")
+#
+#     # Generate random flips
+#     if pos_count > 0:
+#         pos_flip = np.random.binomial(1, noise_rates[0], pos_count)
+#         labels_noisy[pos_mask] = labels_noisy[pos_mask] * (1 - pos_flip)  # positive to negative
+#         pos_flipped = np.sum(pos_flip)
+#         print(f"Flipped {pos_flipped} positive samples to negative (rate: {noise_rates[0]})")
+#
+#     if neg_count > 0:
+#         neg_flip = np.random.binomial(1, noise_rates[1], neg_count)
+#         labels_noisy[neg_mask] = labels_noisy[neg_mask] + neg_flip * (1 - labels_noisy[neg_mask])  # negative to positive
+#         neg_flipped = np.sum(neg_flip)
+#         print(f"Flipped {neg_flipped} negative samples to positive (rate: {noise_rates[1]})")
+#
+#     final_pos_count = np.sum(labels_noisy == 1)
+#     final_neg_count = np.sum(labels_noisy == 0)
+#     print(f"After noise: {final_neg_count} negative, {final_pos_count} positive")
+#
+#     return labels_noisy
 
 
 def calculate_propensity(labels, alpha, target_observation_rate=0.2):
@@ -150,10 +203,11 @@ parser = ArgumentParser(description="Linear Probing on Precomputed Embeddings")
 parser.add_argument("--model_name", type=str, default="FsfairX-LLaMA3-RM-v0.1")
 parser.add_argument("--data_name", type=str, default="saferlhf")
 parser.add_argument("--data_root", type=str, default="../embeddings/normal")
-parser.add_argument("--output_dir", type=str, default="../embeddings/biased_noisy")
+parser.add_argument("--output_dir", type=str, default="../embeddings/biased_pu")
 parser.add_argument("--alpha", type=float, default=0.5, help="Alpha parameter for propensity calculation")
-parser.add_argument("--r10", type=float, default=0.1, help="Noise rate for positive to negative")
-parser.add_argument("--r01", type=float, default=0.1, help="Noise rate for negative to positive")
+# NOTE: Label noise parameters removed - now using PU Learning instead
+# parser.add_argument("--r10", type=float, default=0.1, help="Noise rate for positive to negative")
+# parser.add_argument("--r01", type=float, default=0.1, help="Noise rate for negative to positive")
 args = parser.parse_args()
 
 data = load_file(f"{args.data_root}/{args.model_name}_{args.data_name}_train.safetensors")
@@ -183,16 +237,41 @@ print(f"Training set after sampling: {X_train_sampled.shape[0]} samples ({X_trai
 print(f"Valid set after sampling: {X_val_sampled.shape[0]} samples ({X_val_sampled.shape[0]/X_val.shape[0]*100:.1f}% of original)")
 print(f"Expected training observations: {np.sum(propensity_train):.1f}")
 
-# Binarize
-y_train_binary = binarize_labels(y_train, args.data_name)
-y_val_binary = binarize_labels(y_val, args.data_name)
-noise_rates = [args.r10, args.r01]
-###### Add noise to observed positions only
-y_train_binary[mask_train] = add_noise_to_labels(y_train_binary[mask_train], noise_rates, seed=0)
-y_val_binary[mask_val] = add_noise_to_labels(y_val_binary[mask_val], noise_rates, seed=0)
-###### Add noise to all positions
-# y_train_binary = add_noise_to_labels(y_train_binary, noise_rates, seed=0)
-# y_val_binary = add_noise_to_labels(y_val_binary, noise_rates, seed=0)
+# Binarize - compute true binary labels
+y_train_binary_true = binarize_labels(y_train, args.data_name)
+y_val_binary_true = binarize_labels(y_val, args.data_name)
+
+# PU Learning setup:
+# - Observed samples (mask=True): use true binary labels
+# - Unobserved samples (mask=False): set to 0 (unlabeled)
+y_train_binary = y_train_binary_true.copy()
+y_train_binary[~mask_train] = 0  # Unobserved -> unlabeled (0)
+
+y_val_binary = y_val_binary_true.copy()
+y_val_binary[~mask_val] = 0  # Unobserved -> unlabeled (0)
+
+# PU Learning Statistics
+print("\n=== PU Learning Statistics (Train) ===")
+total_pos_train = np.sum(y_train_binary_true == 1)
+masked_pos_train = np.sum((~mask_train) & (y_train_binary_true == 1))
+observed_pos_train = np.sum(mask_train & (y_train_binary_true == 1))
+observed_neg_train = np.sum(mask_train & (y_train_binary_true == 0))
+print(f"Total positive samples: {total_pos_train}")
+print(f"Masked (unlabeled) positive samples: {masked_pos_train}")
+print(f"Masked positive ratio: {masked_pos_train/total_pos_train*100:.1f}%")
+print(f"Observed positive samples: {observed_pos_train}")
+print(f"Observed negative samples: {observed_neg_train}")
+
+print("\n=== PU Learning Statistics (Val) ===")
+total_pos_val = np.sum(y_val_binary_true == 1)
+masked_pos_val = np.sum((~mask_val) & (y_val_binary_true == 1))
+observed_pos_val = np.sum(mask_val & (y_val_binary_true == 1))
+observed_neg_val = np.sum(mask_val & (y_val_binary_true == 0))
+print(f"Total positive samples: {total_pos_val}")
+print(f"Masked (unlabeled) positive samples: {masked_pos_val}")
+print(f"Masked positive ratio: {masked_pos_val/total_pos_val*100:.1f}%")
+print(f"Observed positive samples: {observed_pos_val}")
+print(f"Observed negative samples: {observed_neg_val}")
 
 data_test = load_file(f"{args.data_root}/{args.model_name}_{args.data_name}_test.safetensors")
 y_test = data_test["labels"].float().numpy()
@@ -214,4 +293,4 @@ save_file({
     "propensity_val": torch.from_numpy(propensity_val),
     "mask_train": torch.from_numpy(mask_train),
     "mask_val": torch.from_numpy(mask_val)
-}, f"{args.output_dir}/{args.model_name}_{args.data_name}_{args.alpha}_{args.r10}_{args.r01}.safetensors")
+}, f"{args.output_dir}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors")
