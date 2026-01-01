@@ -131,8 +131,11 @@ bash data_prepare.sh
 {
     "embeddings": Tensor[N, D],  # N 个样本, D 维 embedding
     "labels": Tensor[N],         # 连续奖励标签
+    "user_id": Tensor[N],        # int64, 每条样本对应的 prompt/group id（用于后续 pointwise/pairwise 分组采样）
 }
 ```
+
+> 说明：`user_id` 会优先使用 rawdata 中的 `prompt_id`（若存在），否则用 `prompt` 文本构造一个稳定的哈希 id。
 
 ### 支持的数据集
 
@@ -176,6 +179,7 @@ bash simulate_bias_pu.sh
 
 ```
 {output_dir}/{model_name}_{data_name}_{alpha}_pu.safetensors
+{output_dir}/{model_name}_{data_name}_{alpha}_pu_stats.yaml   # 统计信息 (样本数/unique user/PU mask 等)
 
 # 格式:
 {
@@ -201,6 +205,11 @@ bash simulate_bias_pu.sh
     # 观察掩码 (True = 被观察到/标记为正)
     "mask_train": Tensor[N_train],
     "mask_val": Tensor[N_val],
+
+    # (可选) prompt/group id（若 Stage 1 输入包含 user_id）
+    "user_id_train": Tensor[N_train],  # int64
+    "user_id_val": Tensor[N_val],      # int64
+    "user_id_test": Tensor[N_test],    # int64
 }
 ```
 

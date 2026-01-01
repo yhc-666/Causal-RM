@@ -14,6 +14,7 @@ Input format (safetensors):
     {
         "embeddings": Tensor[N, D],  # N samples, D-dimensional embeddings
         "labels": Tensor[N],         # Continuous reward labels
+        "user_id": Tensor[N],        # (Optional) int64 group id, for group-wise sampling/pairwise
     }
 
 === OUTPUT ===
@@ -44,6 +45,11 @@ Output format (safetensors):
         # Observation masks (True = observed/sampled)
         "mask_train": Tensor[N_train],  # Boolean
         "mask_val": Tensor[N_val],      # Boolean
+
+        # (Optional) group ids aligned with X_*/y_* splits
+        "user_id_train": Tensor[N_train],  # int64
+        "user_id_val": Tensor[N_val],      # int64
+        "user_id_test": Tensor[N_test],    # int64
     }
 
 === PARAMETERS ===
@@ -59,6 +65,7 @@ import torch
 from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
+import yaml
 from safetensors.torch import load_file, save_file
 from sklearn.model_selection import train_test_split
 
@@ -199,6 +206,57 @@ def apply_propensity_sampling(X, y, propensity, seed=0):
     return X_sampled, y_sampled, propensity_sampled, mask
 
 
+def _safe_float(x):
+    try:
+        return float(x)
+    except Exception:
+        return float("nan")
+
+
+def _split_stats(y_binary_true, mask, propensity):
+    y_binary_true = np.asarray(y_binary_true)
+    mask = np.asarray(mask).astype(bool)
+    propensity = np.asarray(propensity)
+
+    n_total = int(y_binary_true.shape[0])
+    n_pos = int(np.sum(y_binary_true == 1))
+    n_neg = int(np.sum(y_binary_true == 0))
+
+    n_observed = int(np.sum(mask))
+    n_unobserved = int(n_total - n_observed)
+
+    masked_pos = int(np.sum((~mask) & (y_binary_true == 1)))
+    observed_pos = int(np.sum(mask & (y_binary_true == 1)))
+    observed_neg = int(np.sum(mask & (y_binary_true == 0)))
+
+    return {
+        "n_total": n_total,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "pos_rate": _safe_float(n_pos / n_total) if n_total > 0 else float("nan"),
+        "n_observed": n_observed,
+        "n_unobserved": n_unobserved,
+        "observed_rate": _safe_float(n_observed / n_total) if n_total > 0 else float("nan"),
+        "masked_pos": masked_pos,
+        "masked_pos_ratio_over_pos": _safe_float(masked_pos / n_pos) if n_pos > 0 else float("nan"),
+        "observed_pos": observed_pos,
+        "observed_neg": observed_neg,
+        "propensity_min": _safe_float(np.min(propensity)) if propensity.size > 0 else float("nan"),
+        "propensity_max": _safe_float(np.max(propensity)) if propensity.size > 0 else float("nan"),
+        "propensity_mean": _safe_float(np.mean(propensity)) if propensity.size > 0 else float("nan"),
+        "propensity_sum_expected_obs": _safe_float(np.sum(propensity)) if propensity.size > 0 else float("nan"),
+    }
+
+
+def _unique_count(arr):
+    if arr is None:
+        return None
+    arr = np.asarray(arr)
+    if arr.size == 0:
+        return 0
+    return int(np.unique(arr).shape[0])
+
+
 parser = ArgumentParser(description="Linear Probing on Precomputed Embeddings")
 parser.add_argument("--model_name", type=str, default="FsfairX-LLaMA3-RM-v0.1")
 parser.add_argument("--data_name", type=str, default="saferlhf")
@@ -213,12 +271,16 @@ args = parser.parse_args()
 data = load_file(f"{args.data_root}/{args.model_name}_{args.data_name}_train.safetensors")
 embeddings = data["embeddings"].float().numpy()
 labels = data["labels"].float().numpy()
+user_id = data["user_id"].numpy() if "user_id" in data else None
 print(f"Total embeddings loaded: {embeddings.shape[0]}")
 print(f"Total labels loaded: {labels.shape[0]}")
+if user_id is not None:
+    print(f"Total user_id loaded: {user_id.shape[0]}")
 
 # Mask data where target_label is nan
 embeddings_filtered = embeddings[~np.isnan(labels)]
 target_labels_filtered = labels[~np.isnan(labels)]
+user_id_filtered = user_id[~np.isnan(labels)] if user_id is not None else None
 propensity_filtered = calculate_propensity(target_labels_filtered, args.alpha)
 print(f"Original data size: {embeddings.shape[0]}")
 print(f"Data size after filtering NaN values: {embeddings_filtered.shape[0]}")
@@ -226,7 +288,23 @@ print(f"Propensity range: [{propensity_filtered.min():.6f}, {propensity_filtered
 
 
 # Data split
-X_train, X_val, y_train, y_val, propensity_train, propensity_val = train_test_split(embeddings_filtered, target_labels_filtered, propensity_filtered, test_size=0.2, random_state=42)
+if user_id_filtered is not None:
+    X_train, X_val, y_train, y_val, propensity_train, propensity_val, user_id_train, user_id_val = train_test_split(
+        embeddings_filtered,
+        target_labels_filtered,
+        propensity_filtered,
+        user_id_filtered,
+        test_size=0.2,
+        random_state=42,
+    )
+else:
+    X_train, X_val, y_train, y_val, propensity_train, propensity_val = train_test_split(
+        embeddings_filtered,
+        target_labels_filtered,
+        propensity_filtered,
+        test_size=0.2,
+        random_state=42,
+    )
 print(f"Training set size: {X_train.shape[0]} ({X_train.shape[0]/embeddings_filtered.shape[0]*100:.1f}%)")
 print(f"Validation set size: {X_val.shape[0]} ({X_val.shape[0]/embeddings_filtered.shape[0]*100:.1f}%)")
 
@@ -276,9 +354,10 @@ print(f"Observed negative samples: {observed_neg_val}")
 data_test = load_file(f"{args.data_root}/{args.model_name}_{args.data_name}_test.safetensors")
 y_test = data_test["labels"].float().numpy()
 y_test_binary = binarize_labels(y_test, args.data_name)
+user_id_test = data_test["user_id"] if "user_id" in data_test else None
 
 os.makedirs(args.output_dir, exist_ok=True)
-save_file({
+output = {
     # subsets that are used for unbiased evaluation
     "X_train": torch.from_numpy(X_train),
     "X_val": torch.from_numpy(X_val),
@@ -293,4 +372,60 @@ save_file({
     "propensity_val": torch.from_numpy(propensity_val),
     "mask_train": torch.from_numpy(mask_train),
     "mask_val": torch.from_numpy(mask_val)
-}, f"{args.output_dir}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors")
+}
+if user_id_filtered is not None:
+    output["user_id_train"] = torch.from_numpy(user_id_train)
+    output["user_id_val"] = torch.from_numpy(user_id_val)
+if user_id_test is not None:
+    output["user_id_test"] = user_id_test
+
+output_path = f"{args.output_dir}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
+save_file(output, output_path)
+
+# Save dataset statistics for later analysis (grouping/pairwise sampling, PU rates, etc.)
+stats = {
+    "model_name": args.model_name,
+    "data_name": args.data_name,
+    "alpha": float(args.alpha),
+    "output_path": output_path,
+    "stage1_train_path": f"{args.data_root}/{args.model_name}_{args.data_name}_train.safetensors",
+    "stage1_test_path": f"{args.data_root}/{args.model_name}_{args.data_name}_test.safetensors",
+    "user_id_available": user_id_filtered is not None,
+    "user_id_test_available": user_id_test is not None,
+    "target_observation_rate": 0.2,
+    "n_stage1_train_total": int(embeddings.shape[0]),
+    "n_stage1_train_nan_labels": int(np.isnan(labels).sum()),
+    "n_stage1_train_after_nan_filter": int(embeddings_filtered.shape[0]),
+    "n_split_train": int(X_train.shape[0]),
+    "n_split_val": int(X_val.shape[0]),
+    "n_test": int(data_test["embeddings"].shape[0]),
+    "binary_threshold": float(np.median(data2levels[args.data_name])),
+    "train": _split_stats(y_train_binary_true, mask_train, propensity_train),
+    "val": _split_stats(y_val_binary_true, mask_val, propensity_val),
+    "test": {
+        "n_total": int(y_test_binary.shape[0]),
+        "n_pos": int(np.sum(y_test_binary == 1)),
+        "n_neg": int(np.sum(y_test_binary == 0)),
+        "pos_rate": _safe_float(np.mean(y_test_binary == 1)) if y_test_binary.size > 0 else float("nan"),
+    },
+}
+
+if user_id_filtered is not None:
+    stats["user_id"] = {
+        "n_unique_train": _unique_count(user_id_train),
+        "n_unique_val": _unique_count(user_id_val),
+        "n_unique_test": _unique_count(user_id_test.cpu().numpy() if user_id_test is not None else None),
+        "n_unique_train_observed": _unique_count(user_id_train[mask_train]),
+        "n_unique_val_observed": _unique_count(user_id_val[mask_val]),
+        "n_unique_train_pos": _unique_count(user_id_train[y_train_binary_true == 1]),
+        "n_unique_val_pos": _unique_count(user_id_val[y_val_binary_true == 1]),
+        "n_unique_train_masked_pos": _unique_count(user_id_train[(~mask_train) & (y_train_binary_true == 1)]),
+        "n_unique_val_masked_pos": _unique_count(user_id_val[(~mask_val) & (y_val_binary_true == 1)]),
+    }
+
+stats_path = f"{args.output_dir}/{args.model_name}_{args.data_name}_{args.alpha}_pu_stats.yaml"
+tmp_stats_path = stats_path + ".tmp"
+with open(tmp_stats_path, "w") as f:
+    yaml.safe_dump(stats, f, sort_keys=False)
+os.replace(tmp_stats_path, stats_path)
+print(f"\nSaved stats to: {stats_path}")

@@ -23,10 +23,14 @@ def seed_everything(seed):
 def load_data(embedding_file, device, keys=None):
     data = load_file(embedding_file)
     keys = data.keys() if keys is None else keys
-    return (
-        data[k].to(device, dtype=torch.bool) if 'mask' in k 
-        else data[k].to(device, dtype=torch.float32) for k in keys
-    )
+    def _dtype_for_key(key: str):
+        if "mask" in key:
+            return torch.bool
+        if "user_id" in key:
+            return torch.long
+        return torch.float32
+
+    return (data[k].to(device, dtype=_dtype_for_key(k)) for k in keys)
 
 
 def f1_score(y_true, y_pred):
