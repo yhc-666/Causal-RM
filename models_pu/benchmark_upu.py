@@ -42,10 +42,10 @@ def parse_arguments():
     base_defaults = {
         "desc": "foo",
         "is_training": True,
-        "output_dir": f"./results/cache/pu/{pre_args.data_name}",
+        "output_dir": f"./results/cache/upu/{pre_args.data_name}",
         "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
-        "estimator_name": "pu",
+        "estimator_name": "upu",
         "data_name": pre_args.data_name,
         "alpha": 0.1,
         "class_prior": 0.5,  # Prior probability of positive class
@@ -229,7 +229,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("Classical PU Learning Reward Modeling")
+    print("Unbiased PU (uPU) Learning Reward Modeling")
     print(f"Class Prior (π): {args.class_prior}")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
@@ -260,7 +260,7 @@ def main():
 
     # Train reward model on all data (PU learning approach)
     print("\n" + "="*70)
-    print("Step 1: Training PU Reward Model")
+    print("Step 1: Training uPU Reward Model")
     print("="*70)
     train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, mask_train.float()), batch_size=args.batch_size, shuffle=True)
     model = Model(X_train.shape[1], args.hidden_dim).to(device)

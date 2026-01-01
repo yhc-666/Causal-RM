@@ -3,6 +3,8 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import math
+from collections import defaultdict
+
 import torch
 
 from argparse import ArgumentParser
@@ -29,27 +31,17 @@ from tools.utils import (
 
 def calculate_propensity(labels, alpha, target_observation_rate=0.2):
     """
-    Calculate propensity scores for each rating.
-
-    Args:
-        labels: Array of ratings
-        alpha: Alpha parameter for propensity calculation
-
-    Returns:
-        propensity: Array of propensity scores
+    Copy from simulate_bias_pu.py (do not import/modify simulate_bias_pu.py).
     """
     propensity = np.ones_like(labels)
     labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
 
     mask_lt_4 = labels < labels.max()
-    # reward越低，propensity score越小
     propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
 
     mask_ge_4 = labels >= labels.max()
     propensity[mask_ge_4] = 1.0
-    # propensity = alpha ** (0.9 - labels)
 
-    # Calculate k such that sum(propensity) = expected_observations
     expected_observations = target_observation_rate * len(labels)
     k = expected_observations / np.sum(propensity)
     propensity = propensity * k
@@ -58,46 +50,22 @@ def calculate_propensity(labels, alpha, target_observation_rate=0.2):
 
 
 class Model(nn.Module):
-    """
-    UPRL has two prediction branches:
-      - pointwise branch: used to estimate P(y=1|x) and provide correction terms
-      - pairwise branch: used for ranking / final prediction
-
-    In the original recommender implementation, these are two independent embedding models.
-    Here we keep the same separation by using two independent MLPs.
-    """
-
     def __init__(self, input_size, hidden_dim_str):
         super(Model, self).__init__()
         hidden_dims = [input_size] + list(map(int, hidden_dim_str.split(",")))
-
-        self.point_layers = nn.ModuleList(
+        self.layers = nn.ModuleList(
             nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1)
         )
-        self.point_head = nn.Linear(hidden_dims[-1], 1)
-
-        self.pair_layers = nn.ModuleList(
-            nn.Linear(hidden_dims[i], hidden_dims[i + 1]) for i in range(len(hidden_dims) - 1)
-        )
-        self.pair_head = nn.Linear(hidden_dims[-1], 1)
-
-    def forward_point(self, x):
-        for layer in self.point_layers:
-            x = torch.nn.functional.leaky_relu(layer(x))
-        return self.point_head(x)
-
-    def forward_pair(self, x):
-        for layer in self.pair_layers:
-            x = torch.nn.functional.leaky_relu(layer(x))
-        return self.pair_head(x)
+        self.output_layer = nn.Linear(hidden_dims[-1], 1)
 
     def forward(self, x):
-        # For evaluation we follow the original UPRL.predict(): use the pairwise branch.
-        return self.forward_pair(x)
+        for layer in self.layers:
+            x = torch.nn.functional.leaky_relu(layer(x))
+        x = self.output_layer(x)
+        return x
 
 
 def parse_arguments():
-    # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
     pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
@@ -105,17 +73,17 @@ def parse_arguments():
     base_defaults = {
         "desc": "foo",
         "is_training": True,
-        "output_dir": f"./results/cache/uprl/{pre_args.data_name}",
+        "output_dir": f"./results/cache/cubpr/{pre_args.data_name}",
         "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
-        "estimator_name": "uprl",
+        "estimator_name": "cubpr",
         "data_name": pre_args.data_name,
         "alpha": 0.1,
         "lr": 0.0002,
-        "clip_min": 1e-8,
+        "clip_min": 0.1,
         "num_epochs": 600,
-        "batch_size": 512,
-        "num_neg": 10,  # number of j samples per i (global pairwise)
+        "batch_size": 512,  # number of positive-i per step
+        "num_neg": 10,  # number of j samples per i
         "hidden_dim": "256,64",
         "patience": 30,
         "seed": 42,
@@ -150,8 +118,7 @@ def parse_arguments():
             "w_reg": 0.2,
         },
     }
-    ds_defaults = dataset_defaults.get(pre_args.data_name, {})
-    merged_defaults = {**base_defaults, **ds_defaults}
+    merged_defaults = {**base_defaults, **dataset_defaults.get(pre_args.data_name, {})}
 
     parser = ArgumentParser(description="")
     parser.add_argument("--desc", type=str, default="foo")
@@ -164,116 +131,180 @@ def parse_arguments():
     parser.add_argument("--lr", type=float)
     parser.add_argument("--clip_min", type=float, help="Minimum clip value for propensity weights")
     parser.add_argument("--num_epochs", type=int)
-    parser.add_argument("--batch_size", type=int)
-    parser.add_argument("--num_neg", type=int, help="Number of j samples per i (global pairwise)")
+    parser.add_argument("--batch_size", type=int, help="Number of positive samples per step")
+    parser.add_argument("--num_neg", type=int, help="Number of j samples per i")
     parser.add_argument("--hidden_dim", type=str, help="Hidden dimensions, e.g., '128,64'")
     parser.add_argument("--patience", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--l2_reg", type=float, help="L2 regularization coefficient")
     parser.add_argument("--w_reg", type=float, help="Task weight")
     parser.add_argument("--rerun", type=str2bool, help="Whether to rerun the experiment")
-    parser.add_argument("--monitor_on", type=str, help="Whether to monitor on train or test set")
-    parser.add_argument("--binary", type=str2bool, help="Whether to use binary or continuous rewards")
+    parser.add_argument("--monitor_on", type=str, help="Whether to monitor on train or val loss")
+    parser.add_argument("--binary", type=str2bool, help="Whether to use binary labels (must be True for CUBPR)")
     parser.add_argument("--use_tqdm", type=str2bool, help="Whether to use tqdm progress bar")
 
     parser.set_defaults(**merged_defaults)
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
+
+
+def _build_user_to_indices(user_id_np: np.ndarray):
+    user_to_indices = defaultdict(list)
+    for idx, uid in enumerate(user_id_np.tolist()):
+        user_to_indices[int(uid)].append(idx)
+    return {uid: np.asarray(idxs, dtype=np.int64) for uid, idxs in user_to_indices.items()}
+
+
+def _sample_other_user_uniform(n: int, user_id_np: np.ndarray, uid: int, k: int, rng):
+    if n <= 1 or k <= 0:
+        return np.empty((0,), dtype=np.int64)
+    out = []
+    rounds = 0
+    while len(out) < k and rounds < 50:
+        need = k - len(out)
+        cand = rng.integers(0, n, size=max(need * 3, 8), endpoint=False, dtype=np.int64)
+        cand = cand[user_id_np[cand] != uid]
+        out.extend(cand.tolist())
+        rounds += 1
+    if len(out) < k:
+        cand = rng.integers(0, n, size=k - len(out), endpoint=False, dtype=np.int64)
+        out.extend(cand.tolist())
+    return np.asarray(out[:k], dtype=np.int64)
+
+
+def _precompute_pairs_cubpr(user_id_np, y_np, num_neg, seed):
+    rng = np.random.default_rng(seed)
+
+    pos_idx = np.where(y_np > 0.5)[0].astype(np.int64)
+    user_to_indices = _build_user_to_indices(user_id_np)
+
+    js_per_pos = []
+    n_within_pairs = 0
+    n_fallback_pairs = 0
+    n_fallback_pos = 0
+
+    n = int(y_np.shape[0])
+    for i in pos_idx:
+        uid = int(user_id_np[i])
+        group = user_to_indices.get(uid, np.asarray([i], dtype=np.int64))
+        cand = group[group != i]
+        if cand.size > 0:
+            k = min(int(num_neg), int(cand.size))
+            js = rng.choice(cand, size=k, replace=False).astype(np.int64)
+            n_within_pairs += int(js.size)
+        else:
+            n_fallback_pos += 1
+            js = _sample_other_user_uniform(n, user_id_np, uid, int(num_neg), rng)
+            n_fallback_pairs += int(js.size)
+        js_per_pos.append(js)
+
+    stats = {
+        "n_pos": int(pos_idx.size),
+        "n_pairs_within_user": int(n_within_pairs),
+        "n_pairs_fallback_other_user": int(n_fallback_pairs),
+        "n_pos_fallback_other_user": int(n_fallback_pos),
+        "fallback_pair_ratio": float(n_fallback_pairs / max(1, (n_within_pairs + n_fallback_pairs))),
+    }
+    return pos_idx, js_per_pos, stats
 
 
 def train(model, train_data, optimizer, num_epochs, val_data, patience, args):
     """
-    Global pairwise UPRL adapted from old recommender UPRL:
-
+    User-wise CUBPR (binary only):
       - i sampled from positives (y=1)
-      - j sampled from all samples
-      - pairwise loss uses pair-branch scores and a correction factor from point-branch predictions
-      - pointwise loss trains the point-branch with an IPS-like objective
+      - j sampled from same user (all samples, y in {0,1})
+      - if a user has no within-user j candidates, fallback: sample j from other users (no explicit switch)
 
-    This implementation follows the original formula structure but replaces (user,item) scoring
-    with MLP scoring on embeddings (global pairs, no user grouping).
+    Loss (same structure as old MF CUBPR baseline, with stronger clipping):
+      base = -log σ(s_i - s_j)
+      w = (1/pi_i) * (1 - y_j/pi_j)
+      loss = mean(w * base)
+
+    where pi is clipped to [clip_min, 1].
     """
     if not args.is_training:
         return
     if not args.binary:
-        raise NotImplementedError("UPRL baseline currently supports binary (0/1) labels only.")
+        raise NotImplementedError("CUBPR baseline currently supports binary (0/1) labels only.")
 
-    X_train_full, y_train_full, propensity_train = train_data
+    X_train_full, y_train_full, user_id_train, propensity_train = train_data
     device = X_train_full.device
-    n = y_train_full.shape[0]
 
-    pos_idx = torch.nonzero(y_train_full > 0.5, as_tuple=False).squeeze(-1)
-    if pos_idx.numel() == 0 or n <= 1:
-        print(f"Skip training: pos={pos_idx.numel()} n={n}")
+    y_np = y_train_full.detach().cpu().numpy()
+    user_id_np = user_id_train.detach().cpu().numpy()
+
+    pos_idx_np, js_per_pos, pair_stats = _precompute_pairs_cubpr(
+        user_id_np=user_id_np,
+        y_np=y_np,
+        num_neg=max(1, int(args.num_neg)),
+        seed=args.seed,
+    )
+    if pos_idx_np.size == 0:
+        print("Skip training: no positive samples.")
         torch.save(model.state_dict(), f"{args.output_dir}/best_model.pth")
         return
+
+    total_pairs = pair_stats["n_pairs_within_user"] + pair_stats["n_pairs_fallback_other_user"]
+    if total_pairs == 0:
+        print(f"Skip training: no valid pairs. stats={pair_stats}")
+        torch.save(model.state_dict(), f"{args.output_dir}/best_model.pth")
+        return
+
+    print(f"[CUBPR] Pair stats: {pair_stats}")
 
     best_loss = float("inf")
     patience_counter = 0
 
-    eps = 1e-5
+    n_pos = int(pos_idx_np.size)
+    steps = max(1, math.ceil(n_pos / int(args.batch_size)))
 
     for epoch in range(num_epochs):
-        perm = torch.randperm(pos_idx.numel(), device=device)
-        pos_shuf = pos_idx[perm]
+        perm = torch.randperm(n_pos)
+        pos_order = perm.detach().cpu().numpy()
 
         model.train()
         epoch_loss = 0.0
 
-        steps = max(1, math.ceil(pos_shuf.numel() / args.batch_size))
-        iterator = range(0, pos_shuf.numel(), args.batch_size)
+        iterator = range(0, n_pos, int(args.batch_size))
         if args.use_tqdm:
-            iterator = tqdm(iterator, desc=f"Training UPRL Model Epoch {epoch + 1}/{num_epochs}", leave=False)
+            iterator = tqdm(iterator, desc=f"Training CUBPR Model Epoch {epoch + 1}/{num_epochs}", leave=False)
 
         for start in iterator:
-            batch_pos_idx = pos_shuf[start : start + args.batch_size]
-            if batch_pos_idx.numel() == 0:
+            batch_pos_pos = pos_order[start : start + int(args.batch_size)]
+            if batch_pos_pos.size == 0:
                 continue
-            batch_size = batch_pos_idx.numel()
 
-            num_neg = max(1, int(args.num_neg))
-            j_idx = torch.randint(0, n, (batch_size, num_neg), device=device)
-            same = j_idx == batch_pos_idx.view(-1, 1)
-            if same.any():
-                j_idx = torch.where(same, (j_idx + 1) % n, j_idx)
+            i_list = []
+            j_list = []
+            for p in batch_pos_pos.tolist():
+                i = pos_idx_np[p]
+                js = js_per_pos[p]
+                if js.size == 0:
+                    continue
+                i_list.append(np.full((js.size,), i, dtype=np.int64))
+                j_list.append(js)
+            if not i_list:
+                continue
 
-            X_i = X_train_full[batch_pos_idx]
-            X_j = X_train_full[j_idx.reshape(-1)]
+            i_idx = torch.from_numpy(np.concatenate(i_list)).to(device=device, dtype=torch.long)
+            j_idx = torch.from_numpy(np.concatenate(j_list)).to(device=device, dtype=torch.long)
 
-            # Pair branch scores
-            s_pair_i = model.forward_pair(X_i).squeeze(-1).view(batch_size, 1)
-            s_pair_j = model.forward_pair(X_j).squeeze(-1).view(batch_size, num_neg)
-            base = -F.logsigmoid(s_pair_i - s_pair_j)  # positive
+            X_i = X_train_full[i_idx]
+            X_j = X_train_full[j_idx]
 
-            # Point branch predictions on j (detached in the correction term)
-            s_point_j = model.forward_point(X_j).squeeze(-1).view(batch_size, num_neg)
-            q = torch.sigmoid(s_point_j).detach()
+            s_i = model(X_i).squeeze(-1)
+            s_j = model(X_j).squeeze(-1)
 
-            flat_j = j_idx.reshape(-1)
-            y_j = y_train_full[flat_j].float().view(batch_size, num_neg)
+            diff = s_i - s_j
+            base = -F.logsigmoid(diff)
 
-            pi_i = torch.clamp(propensity_train[batch_pos_idx].float(), args.clip_min, 1.0).view(batch_size, 1)
-            pi_j = torch.clamp(propensity_train[flat_j].float(), args.clip_min, 1.0).view(batch_size, num_neg)
+            pi_i = torch.clamp(propensity_train[i_idx].float(), args.clip_min, 1.0)
+            pi_j = torch.clamp(propensity_train[j_idx].float(), args.clip_min, 1.0)
+            y_j = y_train_full[j_idx].float()
 
-            # Original UPRL pairwise weight: (1/pi_i) * (1 - y_j) / pi_j
-            w = (1.0 / pi_i) * (1.0 - y_j) / pi_j
+            w = (1.0 / pi_i) * (1.0 - (y_j / pi_j))
+            loss = torch.mean(w * base)
 
-            numerator = pi_j * (1.0 - q)
-            denominator = 1.0 - q * pi_j + eps
-            corr = numerator / denominator
-
-            pair_loss = torch.mean(torch.clamp(corr * w * base, 0.0, 1e2))
-
-            # Pointwise IPS-like term (original formula structure, with clipping)
-            p = torch.sigmoid(s_point_j)
-            y_over_p = y_j / pi_j
-            coeff_neg = torch.clamp(1.0 - y_over_p, -1e8, 1e8)
-            ll = y_over_p * torch.log(p + eps) + coeff_neg * torch.log(1.0 - p + eps)
-            point_ce = -torch.mean(torch.clamp(ll, -1e8, 1e8))
-
-            loss = pair_loss + point_ce
             weighted_loss = args.w_reg * loss
-
             optimizer.zero_grad()
             weighted_loss.backward()
             optimizer.step()
@@ -282,9 +313,7 @@ def train(model, train_data, optimizer, num_epochs, val_data, patience, args):
 
         val_loss = evaluate(model, val_data, args)
         if epoch % 4 == 0:
-            print(
-                f"Epoch {epoch + 1}/{num_epochs}, Train loss: {epoch_loss/steps:.5f}, Val loss: {val_loss:.5f}"
-            )
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train loss: {epoch_loss/steps:.5f}, Val loss: {val_loss:.5f}")
 
         monitor_loss = epoch_loss / steps if args.monitor_on == "train" else val_loss
         if monitor_loss < best_loss:
@@ -326,18 +355,33 @@ def main():
     print(f"Using device: {device}")
 
     print("=" * 70)
-    print("UPRL Reward Modeling (Global Pairwise)")
+    print("CUBPR Reward Modeling (User-wise Pairwise + Fallback Other-User)")
     print("=" * 70)
     print("Loading embeddings and labels from Safetensors file...")
-    if args.binary:
-        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
-        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = load_data(
+
+    if not args.binary:
+        raise NotImplementedError("CUBPR baseline currently supports --binary True only.")
+
+    embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
+    try:
+        (
+            X_train_full,
+            y_train_full,
+            mask_train,
+            user_id_train,
+            X_val_full,
+            y_val_full,
+            mask_val,
+            X_test,
+            y_test,
+        ) = load_data(
             embedding_file,
             device,
             keys=[
                 "X_train",
                 "y_train_binary",
                 "mask_train",
+                "user_id_train",
                 "X_val",
                 "y_val_binary",
                 "mask_val",
@@ -345,15 +389,12 @@ def main():
                 "y_test_binary",
             ],
         )
-    else:
-        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}.safetensors"
-        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = load_data(
-            embedding_file,
-            device,
-            keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"],
-        )
+    except KeyError as e:
+        raise KeyError(
+            f"{embedding_file} is missing `user_id_train`. Please rerun Stage 1/2 to generate user_id fields."
+        ) from e
 
-    print(f"Training on {X_train_full.shape[0]} samples (global pairwise sampling).")
+    print(f"Training on {X_train_full.shape[0]} samples (user-wise pairwise).")
     print(f"Validating on {X_val_full.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
@@ -368,7 +409,7 @@ def main():
 
     train(
         model=model,
-        train_data=(X_train_full, y_train_full, propensity_train),
+        train_data=(X_train_full, y_train_full, user_id_train, propensity_train),
         optimizer=optimizer,
         num_epochs=args.num_epochs,
         val_data=val_data,
@@ -380,7 +421,7 @@ def main():
 
     with torch.no_grad():
         def get_preds(X, y, mask):
-            reward_pred = torch.sigmoid(model(X).squeeze()) if args.binary else model(X).squeeze()
+            reward_pred = torch.sigmoid(model(X).squeeze())
             reward_pred = reward_pred.detach().cpu().numpy()
             y_cpu = y.cpu().numpy()
             mask_cpu = mask.cpu().numpy()

@@ -3,6 +3,8 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import math
+from collections import defaultdict
+
 import torch
 
 from argparse import ArgumentParser
@@ -27,6 +29,26 @@ from tools.utils import (
 )
 
 
+def calculate_propensity(labels, alpha, target_observation_rate=0.2):
+    """
+    Copy from simulate_bias_pu.py (do not import/modify simulate_bias_pu.py).
+    """
+    propensity = np.ones_like(labels)
+    labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
+
+    mask_lt_4 = labels < labels.max()
+    propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
+
+    mask_ge_4 = labels >= labels.max()
+    propensity[mask_ge_4] = 1.0
+
+    expected_observations = target_observation_rate * len(labels)
+    k = expected_observations / np.sum(propensity)
+    propensity = propensity * k
+
+    return propensity
+
+
 class Model(nn.Module):
     def __init__(self, input_size, hidden_dim_str):
         super(Model, self).__init__()
@@ -44,30 +66,29 @@ class Model(nn.Module):
 
 
 def parse_arguments():
-    # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
     pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
-    # Base defaults if dataset not listed
     base_defaults = {
         "desc": "foo",
         "is_training": True,
-        "output_dir": f"./results/cache/bpr/{pre_args.data_name}",
+        "output_dir": f"./results/cache/ubpr/{pre_args.data_name}",
         "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
-        "estimator_name": "bpr",
+        "estimator_name": "ubpr",
         "data_name": pre_args.data_name,
         "alpha": 0.1,
         "lr": 0.0002,
+        "clip_min": 1e-8,
         "num_epochs": 600,
-        "batch_size": 512,
-        "num_neg": 10,  # number of j samples per i (global pairwise)
+        "batch_size": 512,  # number of positive-i per step
+        "num_neg": 10,  # number of j samples per i
         "hidden_dim": "256,64",
         "patience": 30,
         "seed": 42,
-        "l2_reg": 1e-6,  # L2 regularization
-        "w_reg": 1.0,  # Task weight
+        "l2_reg": 1e-6,
+        "w_reg": 1.0,
         "rerun": False,
         "monitor_on": "train",
         "binary": True,
@@ -97,10 +118,8 @@ def parse_arguments():
             "w_reg": 0.2,
         },
     }
-    ds_defaults = dataset_defaults.get(pre_args.data_name, {})
-    merged_defaults = {**base_defaults, **ds_defaults}
+    merged_defaults = {**base_defaults, **dataset_defaults.get(pre_args.data_name, {})}
 
-    # Full parser
     parser = ArgumentParser(description="")
     parser.add_argument("--desc", type=str, default="foo")
     parser.add_argument("--is_training", type=str2bool, default=True)
@@ -108,84 +127,180 @@ def parse_arguments():
     parser.add_argument("--data_root", type=str)
     parser.add_argument("--model_name", type=str)
     parser.add_argument("--data_name", type=str)
-    parser.add_argument("--alpha", type=float, help="Alpha parameter for propensity calculation (unused in BPR)")
+    parser.add_argument("--alpha", type=float, help="Alpha parameter for propensity calculation")
     parser.add_argument("--lr", type=float)
+    parser.add_argument("--clip_min", type=float, help="Minimum clip value for propensity weights")
     parser.add_argument("--num_epochs", type=int)
-    parser.add_argument("--batch_size", type=int)
-    parser.add_argument("--num_neg", type=int, help="Number of j samples per i (global pairwise)")
+    parser.add_argument("--batch_size", type=int, help="Number of positive samples per step")
+    parser.add_argument("--num_neg", type=int, help="Number of j samples per i")
     parser.add_argument("--hidden_dim", type=str, help="Hidden dimensions, e.g., '128,64'")
     parser.add_argument("--patience", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--l2_reg", type=float, help="L2 regularization coefficient")
     parser.add_argument("--w_reg", type=float, help="Task weight")
     parser.add_argument("--rerun", type=str2bool, help="Whether to rerun the experiment")
-    parser.add_argument("--monitor_on", type=str, help="Whether to monitor on train or test set")
-    parser.add_argument("--binary", type=str2bool, help="Whether to use binary or continuous rewards")
+    parser.add_argument("--monitor_on", type=str, help="Whether to monitor on train or val loss")
+    parser.add_argument("--binary", type=str2bool, help="Whether to use binary labels (must be True for UBPR)")
     parser.add_argument("--use_tqdm", type=str2bool, help="Whether to use tqdm progress bar")
 
     parser.set_defaults(**merged_defaults)
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
+
+
+def _build_user_to_indices(user_id_np: np.ndarray):
+    user_to_indices = defaultdict(list)
+    for idx, uid in enumerate(user_id_np.tolist()):
+        user_to_indices[int(uid)].append(idx)
+    return {uid: np.asarray(idxs, dtype=np.int64) for uid, idxs in user_to_indices.items()}
+
+
+def _sample_other_user_uniform(n: int, user_id_np: np.ndarray, uid: int, k: int, rng):
+    if n <= 1 or k <= 0:
+        return np.empty((0,), dtype=np.int64)
+    out = []
+    rounds = 0
+    while len(out) < k and rounds < 50:
+        need = k - len(out)
+        cand = rng.integers(0, n, size=max(need * 3, 8), endpoint=False, dtype=np.int64)
+        cand = cand[user_id_np[cand] != uid]
+        out.extend(cand.tolist())
+        rounds += 1
+    if len(out) < k:
+        cand = rng.integers(0, n, size=k - len(out), endpoint=False, dtype=np.int64)
+        out.extend(cand.tolist())
+    return np.asarray(out[:k], dtype=np.int64)
+
+
+def _precompute_pairs_ubpr(user_id_np, y_np, num_neg, seed):
+    rng = np.random.default_rng(seed)
+
+    pos_idx = np.where(y_np > 0.5)[0].astype(np.int64)
+    user_to_indices = _build_user_to_indices(user_id_np)
+
+    js_per_pos = []
+    n_within_pairs = 0
+    n_fallback_pairs = 0
+    n_fallback_pos = 0
+
+    n = int(y_np.shape[0])
+    for i in pos_idx:
+        uid = int(user_id_np[i])
+        group = user_to_indices.get(uid, np.asarray([i], dtype=np.int64))
+        cand = group[group != i]
+        if cand.size > 0:
+            k = min(int(num_neg), int(cand.size))
+            js = rng.choice(cand, size=k, replace=False).astype(np.int64)
+            n_within_pairs += int(js.size)
+        else:
+            n_fallback_pos += 1
+            js = _sample_other_user_uniform(n, user_id_np, uid, int(num_neg), rng)
+            n_fallback_pairs += int(js.size)
+        js_per_pos.append(js)
+
+    stats = {
+        "n_pos": int(pos_idx.size),
+        "n_pairs_within_user": int(n_within_pairs),
+        "n_pairs_fallback_other_user": int(n_fallback_pairs),
+        "n_pos_fallback_other_user": int(n_fallback_pos),
+        "fallback_pair_ratio": float(n_fallback_pairs / max(1, (n_within_pairs + n_fallback_pairs))),
+    }
+    return pos_idx, js_per_pos, stats
 
 
 def train(model, train_data, optimizer, num_epochs, val_data, patience, args):
     """
-    Global pairwise BPR:
+    User-wise UBPR (binary only):
       - i sampled from positives (y=1)
-      - j sampled from negatives/unlabeled (y=0)
-      - loss = mean_{i,j} [ -log σ(s_i - s_j) ]
+      - j sampled from same user (all samples, y in {0,1})
+      - if a user has no within-user j candidates, fallback: sample j from other users (no explicit switch)
 
-    Here s is the model output logit (no sigmoid).
+    Loss (same structure as old MF UBPR baseline):
+      base = -log σ(s_i - s_j)
+      w = (1/pi_i) * (1 - y_j/pi_j)
+      loss = mean(w * base)
     """
     if not args.is_training:
         return
     if not args.binary:
-        raise NotImplementedError("Global BPR baseline currently supports binary (0/1) labels only.")
+        raise NotImplementedError("UBPR baseline currently supports binary (0/1) labels only.")
 
-    X_train_full, y_train_full = train_data
+    X_train_full, y_train_full, user_id_train, propensity_train = train_data
     device = X_train_full.device
 
-    pos_idx = torch.nonzero(y_train_full > 0.5, as_tuple=False).squeeze(-1)
-    neg_idx = torch.nonzero(y_train_full <= 0.5, as_tuple=False).squeeze(-1)
-    if pos_idx.numel() == 0 or neg_idx.numel() == 0:
-        print(f"Skip training: pos={pos_idx.numel()} neg={neg_idx.numel()}")
+    y_np = y_train_full.detach().cpu().numpy()
+    user_id_np = user_id_train.detach().cpu().numpy()
+
+    pos_idx_np, js_per_pos, pair_stats = _precompute_pairs_ubpr(
+        user_id_np=user_id_np,
+        y_np=y_np,
+        num_neg=max(1, int(args.num_neg)),
+        seed=args.seed,
+    )
+    if pos_idx_np.size == 0:
+        print("Skip training: no positive samples.")
         torch.save(model.state_dict(), f"{args.output_dir}/best_model.pth")
         return
+
+    total_pairs = pair_stats["n_pairs_within_user"] + pair_stats["n_pairs_fallback_other_user"]
+    if total_pairs == 0:
+        print(f"Skip training: no valid pairs. stats={pair_stats}")
+        torch.save(model.state_dict(), f"{args.output_dir}/best_model.pth")
+        return
+
+    print(f"[UBPR] Pair stats: {pair_stats}")
 
     best_loss = float("inf")
     patience_counter = 0
 
+    n_pos = int(pos_idx_np.size)
+    steps = max(1, math.ceil(n_pos / int(args.batch_size)))
+
     for epoch in range(num_epochs):
-        perm = torch.randperm(pos_idx.numel(), device=device)
-        pos_shuf = pos_idx[perm]
+        perm = torch.randperm(n_pos)
+        pos_order = perm.detach().cpu().numpy()
 
         model.train()
         epoch_loss = 0.0
 
-        steps = max(1, math.ceil(pos_shuf.numel() / args.batch_size))
-        iterator = range(0, pos_shuf.numel(), args.batch_size)
+        iterator = range(0, n_pos, int(args.batch_size))
         if args.use_tqdm:
-            iterator = tqdm(iterator, desc=f"Training BPR Model Epoch {epoch + 1}/{num_epochs}", leave=False)
+            iterator = tqdm(iterator, desc=f"Training UBPR Model Epoch {epoch + 1}/{num_epochs}", leave=False)
 
         for start in iterator:
-            batch_pos_idx = pos_shuf[start : start + args.batch_size]
-            if batch_pos_idx.numel() == 0:
+            batch_pos_pos = pos_order[start : start + int(args.batch_size)]
+            if batch_pos_pos.size == 0:
                 continue
-            batch_size = batch_pos_idx.numel()
 
-            # Sample j from y=0 pool
-            num_neg = max(1, int(args.num_neg))
-            rand = torch.randint(0, neg_idx.numel(), (batch_size * num_neg,), device=device)
-            j_idx = neg_idx[rand].view(batch_size, num_neg)
+            i_list = []
+            j_list = []
+            for p in batch_pos_pos.tolist():
+                i = pos_idx_np[p]
+                js = js_per_pos[p]
+                if js.size == 0:
+                    continue
+                i_list.append(np.full((js.size,), i, dtype=np.int64))
+                j_list.append(js)
+            if not i_list:
+                continue
 
-            X_i = X_train_full[batch_pos_idx]
-            X_j = X_train_full[j_idx.reshape(-1)]
+            i_idx = torch.from_numpy(np.concatenate(i_list)).to(device=device, dtype=torch.long)
+            j_idx = torch.from_numpy(np.concatenate(j_list)).to(device=device, dtype=torch.long)
 
-            s_i = model(X_i).squeeze(-1).view(batch_size, 1)
-            s_j = model(X_j).squeeze(-1).view(batch_size, num_neg)
+            X_i = X_train_full[i_idx]
+            X_j = X_train_full[j_idx]
+
+            s_i = model(X_i).squeeze(-1)
+            s_j = model(X_j).squeeze(-1)
 
             diff = s_i - s_j
-            loss = (-F.logsigmoid(diff)).mean()
+            base = -F.logsigmoid(diff)
+
+            pi_i = torch.clamp(propensity_train[i_idx].float(), args.clip_min, 1.0)
+            pi_j = torch.clamp(propensity_train[j_idx].float(), args.clip_min, 1.0)
+            y_j = y_train_full[j_idx].float()
+
+            w = (1.0 / pi_i) * (1.0 - (y_j / pi_j))
+            loss = torch.mean(w * base)
 
             weighted_loss = args.w_reg * loss
             optimizer.zero_grad()
@@ -196,9 +311,7 @@ def train(model, train_data, optimizer, num_epochs, val_data, patience, args):
 
         val_loss = evaluate(model, val_data, args)
         if epoch % 4 == 0:
-            print(
-                f"Epoch {epoch + 1}/{num_epochs}, Train loss: {epoch_loss/steps:.5f}, Val loss: {val_loss:.5f}"
-            )
+            print(f"Epoch {epoch + 1}/{num_epochs}, Train loss: {epoch_loss/steps:.5f}, Val loss: {val_loss:.5f}")
 
         monitor_loss = epoch_loss / steps if args.monitor_on == "train" else val_loss
         if monitor_loss < best_loss:
@@ -218,10 +331,10 @@ def evaluate(model, val_data, args, propensity=False):
         X, y, mask = val_data
         outputs = model(X).squeeze()
 
-        if propensity:  # evaluation of the propensity model
+        if propensity:
             criterion_mean = nn.MSELoss()
-            loss = criterion_mean(F.sigmoid(outputs), mask.float())
-        else:  # evaluation of the reward prediction or imputation/baseline model
+            loss = criterion_mean(torch.sigmoid(outputs), mask.float())
+        else:
             criterion_mean = nn.MSELoss() if not args.binary else nn.BCEWithLogitsLoss()
             loss = criterion_mean(outputs, y.float())
     return loss.item()
@@ -240,18 +353,33 @@ def main():
     print(f"Using device: {device}")
 
     print("=" * 70)
-    print("Global Pairwise BPR Reward Modeling")
+    print("UBPR Reward Modeling (User-wise Pairwise + Fallback Other-User)")
     print("=" * 70)
     print("Loading embeddings and labels from Safetensors file...")
-    if args.binary:
-        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
-        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = load_data(
+
+    if not args.binary:
+        raise NotImplementedError("UBPR baseline currently supports --binary True only.")
+
+    embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
+    try:
+        (
+            X_train_full,
+            y_train_full,
+            mask_train,
+            user_id_train,
+            X_val_full,
+            y_val_full,
+            mask_val,
+            X_test,
+            y_test,
+        ) = load_data(
             embedding_file,
             device,
             keys=[
                 "X_train",
                 "y_train_binary",
                 "mask_train",
+                "user_id_train",
                 "X_val",
                 "y_val_binary",
                 "mask_val",
@@ -259,17 +387,17 @@ def main():
                 "y_test_binary",
             ],
         )
-    else:
-        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}.safetensors"
-        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = load_data(
-            embedding_file,
-            device,
-            keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"],
-        )
+    except KeyError as e:
+        raise KeyError(
+            f"{embedding_file} is missing `user_id_train`. Please rerun Stage 1/2 to generate user_id fields."
+        ) from e
 
-    print(f"Training on {X_train_full.shape[0]} samples (global pairwise sampling).")
+    print(f"Training on {X_train_full.shape[0]} samples (user-wise pairwise).")
     print(f"Validating on {X_val_full.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
+
+    propensity_train_np = calculate_propensity(y_train_full.detach().cpu().numpy(), args.alpha)
+    propensity_train = torch.from_numpy(propensity_train_np).to(device=device, dtype=torch.float32)
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     test_data = (X_test, y_test, torch.ones_like(y_test))
@@ -279,7 +407,7 @@ def main():
 
     train(
         model=model,
-        train_data=(X_train_full, y_train_full),
+        train_data=(X_train_full, y_train_full, user_id_train, propensity_train),
         optimizer=optimizer,
         num_epochs=args.num_epochs,
         val_data=val_data,
@@ -291,7 +419,7 @@ def main():
 
     with torch.no_grad():
         def get_preds(X, y, mask):
-            reward_pred = F.sigmoid(model(X).squeeze()) if args.binary else model(X).squeeze()
+            reward_pred = torch.sigmoid(model(X).squeeze())
             reward_pred = reward_pred.detach().cpu().numpy()
             y_cpu = y.cpu().numpy()
             mask_cpu = mask.cpu().numpy()
@@ -332,3 +460,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
