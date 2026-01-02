@@ -6,11 +6,14 @@ the observation mask:
   - Train on `y_train_binary` and treat all `0` (UNK) as negative (missing-as-negative baseline).
   - Compute per-sample propensity from the (noisy) 0/1 labels using `calculate_propensity`
     (copied from `simulate_bias_pu.py`) and clip to `[clip_min, 1]`.
-  - Use a mask-free DR form (implicit mask=1 for all samples):
-      L = (error - error_hat) / pi + error_hat
-    where `error = ℓ(r, y)` and `error_hat = ℓ(r, r_baseline)`.
+  - Use a PU-consistent DR form where only labeled positives are treated as "observed":
+      L = y * (error - error_hat) / pi + error_hat
+    where:
+      - `y ∈ {0,1}` is the PU label (1 = labeled positive, 0 = unlabeled)
+      - `error = ℓ(p, y)` and `error_hat = ℓ(p, p_baseline)`
+      - `p = sigmoid(r)` is the model probability.
 
-Evaluation still reports train/val metrics on observed samples only (via `mask_*`) and
+Evaluation reports mask-blind metrics on full train/val PU labels (y_*_binary) and
 test metrics on the clean test split.
 """
 
@@ -83,15 +86,15 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "dr",
         "data_name": pre_args.data_name,
-        "alpha": 0.1,
+        "alpha": 0.2,
         "lr": 0.0002,
         "clip_min": 0.1,
-        "num_epochs": 600,
+        "num_epochs": 200,
         "batch_size": 512,
         "batch_size_prop": 512,
         "hidden_dim": "256,64",
         "hidden_dim_prop": "256,64",
-        "patience": 30,
+        "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,  # L2 regularization for DR model
         "l2_prop": 1e-6,  # L2 regularization for propensity model
@@ -99,8 +102,8 @@ def parse_arguments():
         "w_prop": 1.0,  # Task weight for propensity model training
         "w_imp": 1.0,  # Task weight for imputation (baseline) model training
         "w_reg": 1.0,  # Task weight for DR model training
-        "rerun": True,
-        "monitor_on": "train",
+        "rerun": False,
+        "monitor_on": "val",
         "binary": True,
         "use_tqdm": True,
     }
@@ -201,8 +204,8 @@ def train(model, baseline_model, train_loader, optimizer, num_epochs, val_data, 
     PU setting (mask is NOT visible to the model):
       - Treat all `y_train_binary == 0` as negative (UNK -> negative).
       - Compute sample-wise propensity via `calculate_propensity(y_train_binary, alpha)` (noisy baseline).
-      - Use a DR-style objective with implicit mask=1 for all samples:
-          L = (error - error_hat) / clip(pi) + error_hat
+      - Use a PU-consistent DR-style objective with implicit observation indicator m=y:
+          L = y * (error - error_hat) / clip(pi) + error_hat
 
     Note: This is a baseline adaptation; it is not the original DR estimator for missing-at-random labels.
     """
@@ -211,7 +214,8 @@ def train(model, baseline_model, train_loader, optimizer, num_epochs, val_data, 
     best_loss = float('inf')
     patience_counter = 0
 
-    criterion = nn.MSELoss(reduction='none') if not args.binary else nn.BCEWithLogitsLoss(reduction='none')
+    criterion = nn.MSELoss(reduction="none") if not args.binary else None
+    eps = 1e-6
 
     for epoch in range(num_epochs):
         epoch_loss = 0
@@ -223,21 +227,29 @@ def train(model, baseline_model, train_loader, optimizer, num_epochs, val_data, 
         for batch_X, batch_y, batch_propensity in bar:
             optimizer.zero_grad()
             reward_pred = model(batch_X).squeeze()
+            batch_y = batch_y.float().squeeze()
 
             with torch.no_grad():
                 # Get baseline predictions (no gradient)
                 baseline_pred = baseline_model(batch_X).squeeze()
                 if args.binary:
-                    baseline_pred = F.sigmoid(baseline_pred)
+                    baseline_pred = torch.clamp(torch.sigmoid(baseline_pred), eps, 1.0 - eps)
 
             prop_clipped = torch.clip(batch_propensity.float(), args.clip_min, 1.0).detach()
 
-            # Compute errors: error = ℓ(r, y), \hat{error} = ℓ(r, r_baseline)
-            error = criterion(reward_pred, batch_y)  # Loss between predicted and true reward
-            error_hat = criterion(reward_pred, baseline_pred)  # Loss between predicted and baseline reward
+            if args.binary:
+                # Use probability-space BCE with clamping to avoid unbounded objectives.
+                p = torch.clamp(torch.sigmoid(reward_pred), eps, 1.0 - eps)
+                error = F.binary_cross_entropy(p, batch_y, reduction="none")
+                error_hat = F.binary_cross_entropy(p, baseline_pred, reduction="none")
 
-            error_diff = error - error_hat
-            dr_loss_per_sample = error_diff / prop_clipped + error_hat
+                # PU-consistent: only labeled positives are treated as observed (m = y).
+                dr_loss_per_sample = batch_y * (error - error_hat) / prop_clipped + error_hat
+            else:
+                # Regression: DR in MSE space (baseline_pred is raw prediction).
+                error = criterion(reward_pred, batch_y)
+                error_hat = criterion(reward_pred, baseline_pred)
+                dr_loss_per_sample = batch_y * (error - error_hat) / prop_clipped + error_hat
 
             # Average over batch
             loss = torch.mean(dr_loss_per_sample)
@@ -343,7 +355,7 @@ def main():
     print("\n" + "="*70)
     print("Step 2: Training Reward Model with Doubly Robust (DR)")
     print("="*70)
-    print("Using DR-style loss: L = (error - error_hat) / π + error_hat  (mask assumed 1 for all)")
+    print("Using DR-style loss (PU-consistent): L = y * (error - error_hat) / π + error_hat")
     train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, propensity_train), batch_size=args.batch_size, shuffle=True)
     model = Model(X_train.shape[1], args.hidden_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2_reg)

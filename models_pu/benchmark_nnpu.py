@@ -47,19 +47,19 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "nnpu",
         "data_name": pre_args.data_name,
-        "alpha": 0.1,
+        "alpha": 0.2,
         "class_prior": 0.5,  # Prior probability of positive class
         "lr": 0.0002,
         "clip_min": 0.1,
-        "num_epochs": 600,
+        "num_epochs": 200,
         "batch_size": 512,
         "hidden_dim": "256,64",
-        "patience": 30,
+        "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,  # L2 regularization
         "w_reg": 1.0,  # Task weight
         "rerun": False,
-        "monitor_on": "train",
+        "monitor_on": "val",
         "binary": True,
         "use_tqdm": True,
     }
@@ -73,11 +73,11 @@ def parse_arguments():
             "w_reg": 1.0,  # Task weight
         },
         "hs": {
-            "alpha": 0.5,
+            "alpha": 0.2,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-5,  # L2 regularization
-            "w_reg": 10.0,  # Task weight
+            "w_reg": 1.0,  # Task weight
         },
         "ufb": {
             "alpha": 0.5,

@@ -78,7 +78,7 @@ class Model(nn.Module):
 def parse_arguments():
     # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
-    pre_parser.add_argument("--data_name", type=str, default="saferlhf")
+    pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
     # Base defaults if dataset not listed
@@ -90,20 +90,20 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "mtdr",
         "data_name": pre_args.data_name,
-        "alpha": 0.5,
+        "alpha": 0.2,
         "lr": 0.0002,
         "clip_min": 0.1,
-        "num_epochs": 600,
+        "num_epochs": 200,
         "batch_size": 512,
         "hidden_dim": "256,64",
-        "patience": 30,
+        "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,  # L2 regularization for DR model
         "w_prop": 1.0,  # Task weight for propensity model training
         "w_imp": 1.0,  # Task weight for imputation (baseline) model training
         "w_reg": 1.0,  # Task weight for DR model training
-        "rerun": True,
-        "monitor_on": "train",
+        "rerun": False,
+        "monitor_on": "val",
         "binary": True,
         "use_tqdm": True,
     }
@@ -115,6 +115,9 @@ def parse_arguments():
             "lr": 0.0005,
         },
         "hs": {
+            "alpha": 0.2,
+            "batch_size": 512,
+            "lr": 0.0005,
         },
         "ufb": {
         }
@@ -162,13 +165,14 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
       L_total = w_prop * L_prop + w_imp * L_imp + w_reg * L_DR
         - L_prop: MSE(π̂(x), π_target)
         - L_imp: baseline/imputation loss on full PU dataset
-        - L_DR: DR-style loss with implicit mask=1:
-            L_DR = (error - error_hat) / clip(π̂(x)) + error_hat
+        - L_DR: DR-style loss with implicit observation indicator m=y (mask-blind PU):
+            L_DR = y * (error - error_hat) / clip(π̂(x)) + error_hat
     """
     if not args.is_training: return
 
     best_loss = float('inf')
     patience_counter = 0
+    eps = 1e-6
 
     # Loss functions
     criterion_prop = nn.MSELoss()
@@ -202,11 +206,19 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
 
             # Task 3: Doubly Robust loss L_DR = mask * (error - \hat{error}) / π + \hat{error}
             # error = ℓ(r(x), y), \hat{error} = ℓ(r(x), r_baseline(x))
-            error = criterion_reward_none(reward_pred, batch_y)
-            error_hat = criterion_reward_none(reward_pred, F.sigmoid(baseline_pred.detach()))  # Detach baseline to prevent double gradient
-
-            error_diff = error - error_hat
-            dr_loss_per_sample = error_diff / prop_clipped + error_hat
+            if args.binary:
+                batch_y_float = batch_y.float().squeeze()
+                p = torch.clamp(torch.sigmoid(reward_pred), eps, 1.0 - eps)
+                baseline_p = torch.clamp(torch.sigmoid(baseline_pred.detach()), eps, 1.0 - eps)
+                error = F.binary_cross_entropy(p, batch_y_float, reduction="none")
+                error_hat = F.binary_cross_entropy(p, baseline_p, reduction="none")
+                error_diff = error - error_hat
+                dr_loss_per_sample = batch_y_float * error_diff / prop_clipped + error_hat
+            else:
+                error = criterion_reward_none(reward_pred, batch_y)
+                error_hat = criterion_reward_none(reward_pred, baseline_pred.detach())
+                error_diff = error - error_hat
+                dr_loss_per_sample = error_diff / prop_clipped + error_hat
             loss_dr = torch.mean(dr_loss_per_sample)
 
             # Combined multitask loss

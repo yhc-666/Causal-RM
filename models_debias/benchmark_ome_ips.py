@@ -56,7 +56,7 @@ class Model(nn.Module):
 def parse_arguments():
     # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
-    pre_parser.add_argument("--data_name", type=str, default="saferlhf")
+    pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
     # Base defaults if dataset not listed
@@ -68,16 +68,16 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "ome_ips",
         "data_name": pre_args.data_name,
-        "alpha": 0.5,
+        "alpha": 0.2,
         "lr": 0.0002,
         "clip_min": 0.1,
-        "num_epochs": 600,
+        "num_epochs": 200,
         "batch_size": 512,
         "batch_size_prop": 512,
         "batch_size_full": 2048,
         "hidden_dim": "256,64",
         "hidden_dim_prop": "256,64",
-        "patience": 30,
+        "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,
         "l2_prop": 1e-6,
@@ -86,7 +86,7 @@ def parse_arguments():
         "w_prop": 1.0,  # Task weight for propensity model training
         "w_noise": 1.0,  # Task weight for noise model training
         "rerun": False,
-        "monitor_on": "train",
+        "monitor_on": "val",
         "binary": True,
         "quant": 0.97,
         "use_tqdm": True,
@@ -99,6 +99,9 @@ def parse_arguments():
             "lr": 0.0005,
         },
         "hs": {
+            "alpha": 0.2,
+            "batch_size": 512,
+            "lr": 0.0005,
         },
         "ufb": {
         }

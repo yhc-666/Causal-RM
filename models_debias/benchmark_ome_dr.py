@@ -56,7 +56,7 @@ class Model(nn.Module):
 def parse_arguments():
     # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
-    pre_parser.add_argument("--data_name", type=str, default="saferlhf")
+    pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
     # Base defaults if dataset not listed
@@ -68,16 +68,16 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "ome_dr",
         "data_name": pre_args.data_name,
-        "alpha": 0.5,
+        "alpha": 0.2,
         "lr": 0.0002,
         "clip_min": 0.1,
-        "num_epochs": 600,
+        "num_epochs": 200,
         "batch_size": 512,
         "batch_size_prop": 512,
         "batch_size_full": 2048,
         "hidden_dim": "256,64",
         "hidden_dim_prop": "256,64",
-        "patience": 30,
+        "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,
         "l2_prop": 1e-6,
@@ -88,7 +88,7 @@ def parse_arguments():
         "w_noise": 1.0,  # Task weight for noise model training
         "w_imp": 1.0,  # Task weight for noise model training
         "rerun": False,
-        "monitor_on": "train",
+        "monitor_on": "val",
         "binary": True,
         "quant": 0.97,
         "use_tqdm": True,
@@ -101,6 +101,9 @@ def parse_arguments():
             "lr": 0.0005,
         },
         "hs": {
+            "alpha": 0.2,
+            "batch_size": 512,
+            "lr": 0.0005,
         },
         "ufb": {
         }
@@ -233,7 +236,8 @@ def train(model, noise_pred_model, baseline_model, train_loader, train_full_iter
     best_loss = float('inf')
     patience_counter = 0
 
-    criterion = nn.MSELoss(reduction='none') if not args.binary else nn.BCEWithLogitsLoss(reduction='none')
+    criterion = nn.MSELoss(reduction='none') if not args.binary else None
+    eps = 1e-6
 
     for epoch in range(num_epochs):
         epoch_loss = 0
@@ -245,6 +249,7 @@ def train(model, noise_pred_model, baseline_model, train_loader, train_full_iter
         bar = tqdm(train_loader, desc=f"Training Unified Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
         for batch_X, batch_y, batch_propensity in bar:
             optimizer.zero_grad()
+            batch_y = batch_y.float().squeeze()
 
             with torch.no_grad():
                 X_sampled, _ = next(train_full_iter)
@@ -258,25 +263,35 @@ def train(model, noise_pred_model, baseline_model, train_loader, train_full_iter
 
                 baseline_pred = baseline_model(batch_X).squeeze().detach()
                 if args.binary:
-                    baseline_pred = F.sigmoid(baseline_pred)
+                    baseline_pred = torch.clamp(torch.sigmoid(baseline_pred), eps, 1.0 - eps)
 
             reward_pred = model(batch_X).squeeze()
 
             denom = max(1 - rho10 - rho01, 1e-6)
-            loss_1 = (
-                (1 - rho10) * criterion(reward_pred, torch.ones_like(reward_pred)) - 
-                rho01 * criterion(reward_pred, torch.zeros_like(reward_pred))
-            ) / denom
-            loss_0 = (
-                (1 - rho01) * criterion(reward_pred, torch.zeros_like(reward_pred)) - 
-                rho10 * criterion(reward_pred, torch.ones_like(reward_pred))
-            ) / denom
-            error = batch_y * loss_1 + (1 - batch_y) * loss_0
-            error_hat = criterion(reward_pred, baseline_pred)
-            error_diff = error - error_hat
-            ips_correction = error_diff / prop_clipped
+            if args.binary:
+                p = torch.clamp(torch.sigmoid(reward_pred), eps, 1.0 - eps)
+                bce_1 = F.binary_cross_entropy(p, torch.ones_like(p), reduction="none")
+                bce_0 = F.binary_cross_entropy(p, torch.zeros_like(p), reduction="none")
 
-            loss = ips_correction + error_hat
+                loss_1 = ((1 - rho10) * bce_1 - rho01 * bce_0) / denom
+                loss_0 = ((1 - rho01) * bce_0 - rho10 * bce_1) / denom
+                error = batch_y * loss_1 + (1 - batch_y) * loss_0
+                error_hat = F.binary_cross_entropy(p, baseline_pred, reduction="none")
+
+                # PU-consistent DR: use implicit observation indicator m=y (mask-blind).
+                loss = batch_y * (error - error_hat) / prop_clipped + error_hat
+            else:
+                loss_1 = (
+                    (1 - rho10) * criterion(reward_pred, torch.ones_like(reward_pred)) -
+                    rho01 * criterion(reward_pred, torch.zeros_like(reward_pred))
+                ) / denom
+                loss_0 = (
+                    (1 - rho01) * criterion(reward_pred, torch.zeros_like(reward_pred)) -
+                    rho10 * criterion(reward_pred, torch.ones_like(reward_pred))
+                ) / denom
+                error = batch_y * loss_1 + (1 - batch_y) * loss_0
+                error_hat = criterion(reward_pred, baseline_pred)
+                loss = (error - error_hat) / prop_clipped + error_hat
 
             # Average over batch
             loss = torch.mean(loss)

@@ -36,7 +36,7 @@ class Model(nn.Module):
 def parse_arguments():
     # Pre-parse only data_name to select dataset defaults
     pre_parser = ArgumentParser(add_help=False)
-    pre_parser.add_argument("--data_name", type=str, default="saferlhf")
+    pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
     # Base defaults if dataset not listed
@@ -48,13 +48,13 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "eps_softmax",
         "data_name": pre_args.data_name,
-        "alpha": 0.5,
+        "alpha": 0.2,
         "lr": 0.0002,
         "clip_min": 0.1,
-        "num_epochs": 600,
+        "num_epochs": 200,
         "batch_size": 512,
         "hidden_dim": "256,64",
-        "patience": 30,
+        "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,  # L2 regularization
         "w_reg": 1.0,  # Task weight
@@ -63,7 +63,7 @@ def parse_arguments():
         "m": 1e4,
         "eps": 1e-8,
         "rerun": False,
-        "monitor_on": "train",
+        "monitor_on": "val",
         "binary": True,
         "use_tqdm": True,
     }
@@ -77,6 +77,11 @@ def parse_arguments():
             "w_reg": 1.0,  # Task weight
         },
         "hs": {
+            "alpha": 0.2,
+            "batch_size": 512,
+            "lr": 0.0005,
+            "l2_reg": 1e-5,
+            "w_reg": 1.0,
         },
         "ufb": {
         }
