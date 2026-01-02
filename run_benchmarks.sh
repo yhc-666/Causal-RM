@@ -3,7 +3,21 @@
 # Configuration
 ALPHA=0.2
 NUM_GPUS=8
-DATA_NAME="saferlhf"  # 可修改为其他数据集: saferlhf, hs, ufb
+ALL_DATASETS=("hs" "saferlhf" "ufb")
+
+# Parse command line arguments for datasets
+# Usage:
+#   ./run_benchmarks.sh                    # 默认运行所有数据集
+#   ./run_benchmarks.sh hs                 # 只运行 hs
+#   ./run_benchmarks.sh hs saferlhf        # 运行 hs 和 saferlhf
+#   ./run_benchmarks.sh --all              # 运行所有数据集
+if [ $# -eq 0 ]; then
+    DATA_NAMES=("${ALL_DATASETS[@]}")
+elif [ "$1" == "--all" ]; then
+    DATA_NAMES=("${ALL_DATASETS[@]}")
+else
+    DATA_NAMES=("$@")
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -47,19 +61,22 @@ declare -A gpu_pids
 task_idx=0
 total_tasks=${#TASKS[@]}
 
+# Current dataset being processed (set by outer loop)
+CURRENT_DATA_NAME=""
+
 # Function to run a task on a specific GPU
 run_task() {
     local gpu_id=$1
     local task=$2
     local dir="${task%%:*}"
     local script="${task##*:}"
-    local log_file="${LOG_DIR}/${dir}_${script%.py}_alpha${ALPHA}_$(date +%Y%m%d_%H%M%S).log"
+    local log_file="${LOG_DIR}/${dir}_${script%.py}_${CURRENT_DATA_NAME}_alpha${ALPHA}_$(date +%Y%m%d_%H%M%S).log"
 
-    echo "[$(date '+%H:%M:%S')] GPU ${gpu_id}: Starting ${dir}/${script}"
+    echo "[$(date '+%H:%M:%S')] GPU ${gpu_id}: Starting ${dir}/${script} (${CURRENT_DATA_NAME})"
 
     CUDA_VISIBLE_DEVICES=${gpu_id} python "${SCRIPT_DIR}/${dir}/${script}" \
         --alpha ${ALPHA} \
-        --data_name ${DATA_NAME} \
+        --data_name ${CURRENT_DATA_NAME} \
         --rerun True \
         > "${log_file}" 2>&1 &
 
@@ -82,46 +99,63 @@ check_and_assign() {
     done
 }
 
-# Initial assignment: fill all GPUs
+# Main loop over datasets
 echo "========================================"
 echo "Starting benchmark suite"
-echo "  alpha=${ALPHA}, data=${DATA_NAME}"
-echo "  Total tasks: ${total_tasks}, GPUs: ${NUM_GPUS}"
+echo "  alpha=${ALPHA}"
+echo "  datasets: ${DATA_NAMES[*]}"
+echo "  tasks per dataset: ${total_tasks}, GPUs: ${NUM_GPUS}"
 echo "========================================"
 
-for gpu_id in $(seq 0 $((NUM_GPUS - 1))); do
-    if [ $task_idx -lt $total_tasks ]; then
-        run_task $gpu_id "${TASKS[$task_idx]}"
-        ((task_idx++))
-    fi
-done
+for DATA_NAME in "${DATA_NAMES[@]}"; do
+    CURRENT_DATA_NAME="${DATA_NAME}"
 
-# Monitor and reassign until all tasks complete
-while true; do
-    sleep 10  # Check every 10 seconds
+    echo ""
+    echo "========================================"
+    echo "Processing dataset: ${DATA_NAME}"
+    echo "========================================"
 
-    # Count running tasks
-    running=0
+    # Reset task queue and GPU pids for each dataset
+    task_idx=0
+    declare -A gpu_pids
+
+    # Initial assignment: fill all GPUs
     for gpu_id in $(seq 0 $((NUM_GPUS - 1))); do
-        pid=${gpu_pids[${gpu_id}]:-0}
-        if [ "$pid" -ne 0 ] && kill -0 "$pid" 2>/dev/null; then
-            ((running++))
+        if [ $task_idx -lt $total_tasks ]; then
+            run_task $gpu_id "${TASKS[$task_idx]}"
+            ((task_idx++))
         fi
     done
 
-    # Check and assign new tasks
-    check_and_assign
+    # Monitor and reassign until all tasks complete
+    while true; do
+        sleep 10  # Check every 10 seconds
 
-    # Exit when all tasks assigned and none running
-    if [ $task_idx -ge $total_tasks ] && [ $running -eq 0 ]; then
-        echo "[$(date '+%H:%M:%S')] All tasks completed!"
-        break
-    fi
+        # Count running tasks
+        running=0
+        for gpu_id in $(seq 0 $((NUM_GPUS - 1))); do
+            pid=${gpu_pids[${gpu_id}]:-0}
+            if [ "$pid" -ne 0 ] && kill -0 "$pid" 2>/dev/null; then
+                ((running++))
+            fi
+        done
 
-    echo "[$(date '+%H:%M:%S')] Progress: ${task_idx}/${total_tasks} assigned, ${running} running"
+        # Check and assign new tasks
+        check_and_assign
+
+        # Exit when all tasks assigned and none running
+        if [ $task_idx -ge $total_tasks ] && [ $running -eq 0 ]; then
+            echo "[$(date '+%H:%M:%S')] Dataset ${DATA_NAME}: All tasks completed!"
+            break
+        fi
+
+        echo "[$(date '+%H:%M:%S')] Dataset ${DATA_NAME}: ${task_idx}/${total_tasks} assigned, ${running} running"
+    done
 done
 
+echo ""
 echo "========================================"
 echo "Benchmark suite finished!"
+echo "Datasets processed: ${DATA_NAMES[*]}"
 echo "Logs saved to: ${LOG_DIR}"
 echo "========================================"
