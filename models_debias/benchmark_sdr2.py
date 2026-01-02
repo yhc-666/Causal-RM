@@ -16,6 +16,26 @@ from tqdm import tqdm
 from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary
 
 
+def calculate_propensity(labels, alpha, target_observation_rate=0.2):
+    """
+    Copy from simulate_bias_pu.py (do not import/modify simulate_bias_pu.py).
+    """
+    propensity = np.ones_like(labels)
+    labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
+
+    mask_lt_4 = labels < labels.max()
+    propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
+
+    mask_ge_4 = labels >= labels.max()
+    propensity[mask_ge_4] = 1.0
+
+    expected_observations = target_observation_rate * len(labels)
+    k = expected_observations / np.sum(propensity)
+    propensity = propensity * k
+
+    return propensity
+
+
 class Model(nn.Module):
     def __init__(self, input_size, hidden_dim_str):
         super(Model, self).__init__()
@@ -43,10 +63,10 @@ def parse_arguments():
     base_defaults = {
         "desc": "foo",
         "is_training": True,
-        "output_dir": f"./results/cache/sdr/{pre_args.data_name}",
+        "output_dir": f"./results/cache/sdr2/{pre_args.data_name}",
         "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
-        "estimator_name": "sdr",
+        "estimator_name": "sdr2",
         "data_name": pre_args.data_name,
         "alpha": 0.5,
         "lr": 0.0002,
@@ -119,6 +139,13 @@ def parse_arguments():
 
 
 def train(model, propensity_model, baseline_model, train_loader, optimizer_prop, optimizer_imp, optimizer_reg, num_epochs, val_data, patience, args):
+    """
+    PU setting (mask-invisible):
+      - Treat all `y_train_binary==0` as negative (UNK->0).
+      - Use label-based propensity target computed by `calculate_propensity(y_train_binary, alpha)`.
+
+    This is a baseline adaptation of SDR2 to the PU setting (no mask used for training).
+    """
     if not args.is_training: return
 
     best_loss = float('inf')
@@ -134,7 +161,7 @@ def train(model, propensity_model, baseline_model, train_loader, optimizer_prop,
         epoch_loss = 0
 
         bar = tqdm(train_loader, desc=f"Training SDR Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, batch_y, batch_mask in bar:
+        for batch_X, batch_y, batch_propensity_target in bar:
             optimizer_reg.zero_grad()
             reward_pred = model(batch_X).squeeze()
 
@@ -154,20 +181,21 @@ def train(model, propensity_model, baseline_model, train_loader, optimizer_prop,
 
             # Task 1: Train imputation model
             imputation_loss = ((error - error_hat) ** 2) / prop_clipped
-            imputation_loss = torch.mean(imputation_loss[batch_mask > 0.5]) * args.w_imp
+            imputation_loss = torch.mean(imputation_loss) * args.w_imp
 
             optimizer_imp.zero_grad()
             imputation_loss.backward()
             optimizer_imp.step()
 
             # Task 2: Train propensity model
-            propensity_loss = criterion_sigmoided(prop_pred, batch_mask.float())
+            target = torch.clip(batch_propensity_target.float(), 0.0, 1.0)
+            propensity_loss = criterion_sigmoided(prop_pred, target)
             imputation_loss = criterion_sigmoided(baseline_pred.detach(), reward_pred.detach())
 
             prop_loss = (
                 propensity_loss + 
                 args.eta * (
-                    (1 - torch.Tensor(batch_mask) / torch.clip(prop_pred, args.clip_min, 1.0)) *
+                    (1.0 - 1.0 / torch.clip(prop_pred, args.clip_min, 1.0)) *
                     (imputation_loss.detach() - imputation_loss.mean())
                 )
             ).mean() ** 2
@@ -179,7 +207,7 @@ def train(model, propensity_model, baseline_model, train_loader, optimizer_prop,
 
             # Task 3: Train reward model
             reward_loss = criterion_sigmoided(reward_pred, batch_y) / prop_clipped
-            reward_loss = torch.mean(reward_loss[batch_mask > 0.5])
+            reward_loss = torch.mean(reward_loss)
             reward_loss = reward_loss * args.w_reg
 
             optimizer_reg.zero_grad()
@@ -232,7 +260,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("Stable Doubly Robust (DR) Reward Modeling")
+    print("Stable Doubly Robust (SDR2) Reward Modeling (PU setting: UNK->0, mask-invisible)")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
@@ -244,14 +272,23 @@ def main():
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"])
 
-    X_train, y_train = X_train_full[mask_train], y_train_full[mask_train]
-    X_val, y_val = X_val_full[mask_val], y_val_full[mask_val]
-    print(f"Training on {X_train.shape[0]} samples.")
+    X_train, y_train = X_train_full, y_train_full
+    X_val, y_val = X_val_full, y_val_full
+    print(f"Training on {X_train.shape[0]} samples (full PU dataset).")
+    if args.binary:
+        print(f"  - y=1 (labeled positives): {(y_train == 1).sum().item()}")
+        print(f"  - y=0 (UNK treated as negative): {(y_train == 0).sum().item()}")
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
+
+    propensity_train_np = calculate_propensity(y_train_full.detach().cpu().numpy(), args.alpha)
+    propensity_val_np = calculate_propensity(y_val_full.detach().cpu().numpy(), args.alpha)
+    propensity_train_np = np.clip(propensity_train_np, 0.0, 1.0)
+    propensity_val_np = np.clip(propensity_val_np, 0.0, 1.0)
+    propensity_train = torch.from_numpy(propensity_train_np).to(device=device, dtype=torch.float32)
 
     # Multitask learning: single model with three outputs
     print("\n" + "="*70)
@@ -259,7 +296,11 @@ def main():
     print("="*70)
     print(f"Task weights: w_prop={args.w_prop}, w_imp={args.w_imp}, w_reg={args.w_reg}")
     print("Combined loss: L_total = w_prop * L_prop + w_imp * L_imp + w_reg * L_DR")
-    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, mask_train.float()), batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(
+        TensorDataset(X_train_full, y_train_full, propensity_train),
+        batch_size=args.batch_size,
+        shuffle=True,
+    )
     model_prop = Model(X_train.shape[1], args.hidden_dim_prop).to(device)
     baseline_model = Model(X_train.shape[1], args.hidden_dim).to(device)
     model = Model(X_train.shape[1], args.hidden_dim).to(device)
@@ -298,34 +339,29 @@ def main():
         prop_val_pred, y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
         prop_test_pred, y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
-    obs_train = mask_train_cpu > 0.5
-    obs_val = mask_val_cpu > 0.5
-
+    # Mask-blind metrics on full train/val PU labels (y_*_binary).
     metrics = {
-        "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on train": r2_score(y_train_cpu, y_train_pred),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
         "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
-        "R2 prop on train": r2_score(mask_train_cpu, prop_train_pred),
-        "R2 prop on val": r2_score(mask_val_cpu, prop_val_pred),
-        "MAE prop on train": mean_absolute_error(mask_train_cpu, prop_train_pred),
-        "MAE prop on val": mean_absolute_error(mask_val_cpu, prop_val_pred),
-        "Max error prop on train": np.max(np.abs(mask_train_cpu - prop_train_pred)),
-        "Max error prop on val": np.max(np.abs(mask_val_cpu - prop_val_pred)),
+        "R2 prop_target on train": r2_score(propensity_train_np, prop_train_pred),
+        "R2 prop_target on val": r2_score(propensity_val_np, prop_val_pred),
+        "MAE prop_target on train": mean_absolute_error(propensity_train_np, prop_train_pred),
+        "MAE prop_target on val": mean_absolute_error(propensity_val_np, prop_val_pred),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy
     print("\n--- Final Performance ---")

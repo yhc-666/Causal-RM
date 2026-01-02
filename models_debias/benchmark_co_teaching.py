@@ -126,14 +126,10 @@ def gen_forget_schedule(num_epochs, forget_rate, num_gradual):
     return forget_rate_schedule
 
 
-def loss_coteaching(loss1, loss2, forget_rate, mask, args):
+def loss_coteaching(loss1, loss2, forget_rate):
     """
     Co-teaching loss logic.
     """
-    # IMPORTANT: We must ignore unobserved data (mask=0).
-    loss1[mask == 0] = float('inf')
-    loss2[mask == 0] = float('inf')
-
     ind1_sorted = torch.argsort(loss1.data)
     ind2_sorted = torch.argsort(loss2.data)
 
@@ -184,7 +180,7 @@ def train(net1, net2, train_loader, optimizer1, optimizer2, num_epochs, val_data
         net2.train()
 
         bar = tqdm(train_loader, desc=f"Training Naive Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, batch_y, batch_mask in bar:
+        for batch_X, batch_y in bar:
             optimizer1.zero_grad()
             optimizer2.zero_grad()
 
@@ -193,7 +189,7 @@ def train(net1, net2, train_loader, optimizer1, optimizer2, num_epochs, val_data
 
             # Calculate Co-teaching loss with cross-update logic
             loss1_raw, loss2_raw = criterion(reward_pred1, batch_y), criterion(reward_pred2, batch_y)
-            loss1, loss2 = loss_coteaching(loss1_raw, loss2_raw, rate_schedule[epoch], batch_mask, args)
+            loss1, loss2 = loss_coteaching(loss1_raw, loss2_raw, rate_schedule[epoch])
 
             # Apply task weight
             weighted_loss1 = args.w_reg * loss1
@@ -255,7 +251,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("Naive Reward Modeling")
+    print("Co-teaching Reward Modeling (PU setting: UNK->0, mask-invisible)")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
@@ -267,20 +263,23 @@ def main():
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"])
 
-    X_train, y_train = X_train_full[mask_train], y_train_full[mask_train]
-    X_val, y_val = X_val_full[mask_val], y_val_full[mask_val]
-    print(f"Training on {X_train.shape[0]} samples.")
+    X_train, y_train = X_train_full, y_train_full
+    X_val, y_val = X_val_full, y_val_full
+    print(f"Training on {X_train.shape[0]} samples (full PU dataset).")
+    if args.binary:
+        print(f"  - y=1 (labeled positives): {(y_train == 1).sum().item()}")
+        print(f"  - y=0 (UNK treated as negative): {(y_train == 0).sum().item()}")
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
-    # Train reward model on observed data only
+    # Train reward model on full PU dataset (no mask used for training)
     print("\n" + "="*70)
     print("Step 2: Training Reward Model")
     print("="*70)
-    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, mask_train.float()), batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full), batch_size=args.batch_size, shuffle=True)
     net1 = Model(X_train.shape[1], args.hidden_dim).to(device)
     net2 = Model(X_train.shape[1], args.hidden_dim).to(device)
     optimizer1 = torch.optim.Adam(net1.parameters(), lr=args.lr, weight_decay=args.l2_reg)
@@ -317,27 +316,24 @@ def main():
         y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
         y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
-    obs_train = mask_train_cpu > 0.5
-    obs_val = mask_val_cpu > 0.5
-
+    # Mask-blind metrics on full train/val PU labels (y_*_binary).
     metrics = {
-        "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on train": r2_score(y_train_cpu, y_train_pred),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
         "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy

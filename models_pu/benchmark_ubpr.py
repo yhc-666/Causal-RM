@@ -104,14 +104,14 @@ def parse_arguments():
             "w_reg": 1.0,
         },
         "hs": {
-            "alpha": 0.5,
+            "alpha": 0.2,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-5,
             "w_reg": 10.0,
         },
         "ufb": {
-            "alpha": 0.5,
+            "alpha": 0.2,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-5,

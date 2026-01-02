@@ -16,6 +16,26 @@ from tqdm import tqdm
 from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary
 
 
+def calculate_propensity(labels, alpha, target_observation_rate=0.2):
+    """
+    Copy from simulate_bias_pu.py (do not import/modify simulate_bias_pu.py).
+    """
+    propensity = np.ones_like(labels)
+    labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
+
+    mask_lt_4 = labels < labels.max()
+    propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
+
+    mask_ge_4 = labels >= labels.max()
+    propensity[mask_ge_4] = 1.0
+
+    expected_observations = target_observation_rate * len(labels)
+    k = expected_observations / np.sum(propensity)
+    propensity = propensity * k
+
+    return propensity
+
+
 class Model(nn.Module):
     def __init__(self, input_size, hidden_dim_str):
         super(Model, self).__init__()
@@ -113,58 +133,12 @@ def parse_arguments():
     return args
 
 
-def train_propensity_model(model, train_loader, optimizer, num_epochs, val_data, patience, args):
-    if not args.is_training: return
-
-    best_loss = float('inf')
-    patience_counter = 0
-
-    criterion_mean = nn.MSELoss()
-
-    for epoch in range(num_epochs):
-        epoch_loss = 0
-
-        model.train()
-
-        bar = tqdm(train_loader, desc=f"Training Propensity Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, _, batch_mask in bar:
-            optimizer.zero_grad()
-            propensity_scores = model(batch_X).squeeze()
-            propensity_scores = F.sigmoid(propensity_scores)
-            loss = criterion_mean(propensity_scores, batch_mask.float())
-            # Apply task weight
-            weighted_loss = loss * args.w_prop
-            weighted_loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()  # Track unweighted loss for reporting
-
-        val_loss = evaluate(model, val_data, args, propensity=True)
-        if epoch % 4 == 0:
-            print(f'Epoch {epoch + 1}/{num_epochs}, Train loss: {loss.item():.5f}, Val loss: {val_loss:.5f}')
-
-        monitor_loss = val_loss
-        if monitor_loss < best_loss:
-            best_loss = monitor_loss
-            patience_counter = 0
-            torch.save(model.state_dict(), f'{args.output_dir}/best_propensity_model.pth')
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print(f"Early stopping triggered for propensity model after {epoch + 1} epochs.")
-                break
-
-
-def train(model, propensity_model, train_loader, optimizer, num_epochs, val_data, patience, args):
+def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
     """
-    Train reward model using IPS loss:
-    L_IPS = mask * (error) / π 
-    
-    where:
-        error = ℓ(r(x), y) - loss between predicted and true reward
-        mask = observation indicator (1 if observed, 0 otherwise)
-        π = propensity score P(mask=1 | x)
-    
-    This provides unbiased estimates if: The propensity model π(x) is correct.
+    PU setting (mask is NOT visible to the model):
+      - Treat all `y_train_binary == 0` as negative (UNK -> negative).
+      - Compute sample-wise propensity via `calculate_propensity(y_train_binary, alpha)` (noisy baseline).
+      - IPS-style training uses: L = E[ error / clip(pi, clip_min, 1) ].
     """
     if not args.is_training: return
 
@@ -177,27 +151,17 @@ def train(model, propensity_model, train_loader, optimizer, num_epochs, val_data
         epoch_loss = 0
 
         model.train()
-        propensity_model.eval()  # Propensity model is frozen during IPS training
-
         bar = tqdm(train_loader, desc=f"Training IPS Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, batch_y, batch_mask in bar:
+        for batch_X, batch_y, batch_propensity in bar:
             optimizer.zero_grad()
             reward_pred = model(batch_X).squeeze()
 
-            # Get propensity scores (no gradient)
-            with torch.no_grad():
-                prop_pred = propensity_model(batch_X).squeeze()
-                prop_pred = F.sigmoid(prop_pred)
-
-            # Clip propensity scores to avoid extreme values
-            prop_clipped = torch.clip(prop_pred, args.clip_min, 1.0).detach()
+            prop_clipped = torch.clip(batch_propensity.float(), args.clip_min, 1.0).detach()
 
             # Compute errors: error = ℓ(r, y)
             error = criterion(reward_pred, batch_y)  # Loss between predicted and true reward
 
-            # IPS loss formula: L_IPS = mask * (error) / π 
-            mask_float = batch_mask.float()
-            ips_loss_per_sample = mask_float * error / prop_clipped
+            ips_loss_per_sample = error / prop_clipped
 
             # Average over batch
             loss = torch.mean(ips_loss_per_sample)
@@ -251,7 +215,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("IPS Reward Modeling")
+    print("IPS Reward Modeling (PU setting: UNK->0, mask-invisible)")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
@@ -263,47 +227,31 @@ def main():
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"])
 
-    X_train, y_train = X_train_full[mask_train], y_train_full[mask_train]
-    X_val, y_val = X_val_full[mask_val], y_val_full[mask_val]
-    print(f"Training on {X_train.shape[0]} samples.")
+    X_train, y_train = X_train_full, y_train_full
+    X_val, y_val = X_val_full, y_val_full
+    print(f"Training on {X_train.shape[0]} samples (full PU dataset).")
+    if args.binary:
+        print(f"  - y=1 (labeled positives): {(y_train == 1).sum().item()}")
+        print(f"  - y=0 (UNK treated as negative): {(y_train == 0).sum().item()}")
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
-    # Step 1: Train propensity model
-    print("\n" + "="*70)
-    print("Step 1: Training Propensity Model")
-    print("="*70)
-    train_loader_prop = DataLoader(TensorDataset(X_train_full, y_train_full, mask_train.float()), batch_size=args.batch_size_prop, shuffle=True)
-    model_prop = Model(X_train.shape[1], args.hidden_dim_prop).to(device)
-    optimizer_prop = torch.optim.Adam(model_prop.parameters(), lr=args.lr, weight_decay=args.l2_prop)
+    propensity_train_np = calculate_propensity(y_train_full.detach().cpu().numpy(), args.alpha)
+    propensity_train = torch.from_numpy(propensity_train_np).to(device=device, dtype=torch.float32)
 
-    train_propensity_model(
-        model=model_prop,
-        train_loader=train_loader_prop,
-        optimizer=optimizer_prop,
-        num_epochs=args.num_epochs,
-        val_data=val_data,
-        patience=args.patience,
-        args=args
-    )
-    del train_loader_prop, optimizer_prop
-    model_prop.load_state_dict(torch.load(f'{args.output_dir}/best_propensity_model.pth'))
-    model_prop.eval()
-
-    # Step 2: Train reward model on observed data only
+    # Train reward model on full PU dataset (no mask used for training)
     print("\n" + "="*70)
     print("Step 2: Training IPS Reward Model")
     print("="*70)
-    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, mask_train.float()), batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, propensity_train), batch_size=args.batch_size, shuffle=True)
     model = Model(X_train.shape[1], args.hidden_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2_reg)
 
     train(
         model=model,
-        propensity_model=model_prop,
         train_loader=train_loader,
         optimizer=optimizer,
         num_epochs=args.num_epochs,
@@ -319,44 +267,33 @@ def main():
         def get_preds(X, y, mask):
             reward_pred = F.sigmoid(model(X).squeeze()) if args.binary else model(X).squeeze()
             reward_pred = reward_pred.cpu().numpy()
-            prop_pred = F.sigmoid(model_prop(X).squeeze())
-            prop_pred = prop_pred.cpu().numpy()
             y_cpu = y.cpu().numpy()
             mask_cpu = mask.cpu().numpy()
-            return prop_pred, reward_pred, y_cpu, mask_cpu
+            return reward_pred, y_cpu, mask_cpu
 
-        prop_train_pred, y_train_pred, y_train_cpu, mask_train_cpu = get_preds(X_train_full, y_train_full, mask_train.float())
-        prop_val_pred, y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
-        prop_test_pred, y_test_pred, y_test_cpu, _ = get_preds(*test_data)
+        y_train_pred, y_train_cpu, mask_train_cpu = get_preds(X_train_full, y_train_full, mask_train.float())
+        y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
+        y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
-    obs_train = mask_train_cpu > 0.5
-    obs_val = mask_val_cpu > 0.5
-
+    # Mask-blind metrics on full train/val PU labels (y_*_binary).
     metrics = {
-        "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on train": r2_score(y_train_cpu, y_train_pred),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
         "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
-        "R2 prop on train": r2_score(mask_train_cpu, prop_train_pred),
-        "R2 prop on val": r2_score(mask_val_cpu, prop_val_pred),
-        "MAE prop on train": mean_absolute_error(mask_train_cpu, prop_train_pred),
-        "MAE prop on val": mean_absolute_error(mask_val_cpu, prop_val_pred),
-        "Max error prop on train": np.max(np.abs(mask_train_cpu - prop_train_pred)),
-        "Max error prop on val": np.max(np.abs(mask_val_cpu - prop_val_pred)),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy
     print("\n--- Final Performance ---")

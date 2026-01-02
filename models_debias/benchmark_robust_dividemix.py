@@ -164,32 +164,25 @@ def eval_train_perturbed(model, eval_loader, args, last_prob=None):
     criterion = nn.BCEWithLogitsLoss(reduction='none')
 
     losses = []
-    masks = []
 
     model.eval()
 
     with torch.no_grad():
         bar = tqdm(eval_loader, desc=f"Eval train perturbed", leave=False) if args.use_tqdm else eval_loader
-        for batch_X, batch_y, batch_mask, batch_idx in bar:
+        for batch_X, batch_y, _ in bar:
             # 1. Label Flip
             noisy_targets, reward_pred = label_flip(model, batch_X, batch_y, 2, args.perturb_step, args.num_steps)
             # 2. Calc Loss
             loss_batch = criterion(reward_pred, noisy_targets)
 
             losses.append(loss_batch.detach().cpu())
-            masks.append(batch_mask.detach().cpu())
 
         losses = torch.cat(losses, dim=0).numpy()
-        masks = torch.cat(masks, dim=0).numpy()
 
-    # 只取出 Observed Data (mask=1) 进行 GMM 拟合
-    observed_indices = np.where(masks > 0.5)[0]
-    observed_losses = losses[observed_indices]
-
-    # Normalize Observed Loss
-    min_l, max_l = observed_losses.min(), observed_losses.max()
-    observed_losses = (observed_losses - min_l) / (max_l - min_l + 1e-8)
-    input_loss = observed_losses.reshape(-1, 1)
+    # Fit GMM on the full PU dataset (mask-invisible baseline)
+    min_l, max_l = losses.min(), losses.max()
+    losses = (losses - min_l) / (max_l - min_l + 1e-8)
+    input_loss = losses.reshape(-1, 1)
 
     # 3. BayesGMM
     gmm = BayesianGaussianMixture(n_components=2, max_iter=50, tol=1e-2, reg_covar=5e-4, weight_concentration_prior_type='dirichlet_process')
@@ -204,15 +197,10 @@ def eval_train_perturbed(model, eval_loader, args, last_prob=None):
             full_probs = np.ones(len(losses)) 
             return full_probs
 
-    prob_observed = gmm.predict_proba(input_loss)
+    prob_all = gmm.predict_proba(input_loss)
     clean_idx = gmm.means_.argmin()
-    prob_clean_observed = prob_observed[:, clean_idx]
-
-    # 映射回全量数组，unobserved 默认为 0
-    full_probs = np.zeros(len(losses))
-    full_probs[observed_indices] = prob_clean_observed
-
-    return full_probs
+    prob_clean = prob_all[:, clean_idx]
+    return prob_clean
 
 
 def train_warmup(model, train_loader, optimizer, num_epochs, args):
@@ -229,13 +217,12 @@ def train_warmup(model, train_loader, optimizer, num_epochs, args):
         model.train()
 
         bar = tqdm(train_loader, desc=f"Training warmup Epoch {epoch+1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, batch_y, batch_mask, _ in bar:
+        for batch_X, batch_y, _ in bar:
             optimizer.zero_grad()
             reward_pred = model(batch_X).squeeze()
 
-            # Loss = BCE + NegEntropy, then masked
+            # Loss = BCE + NegEntropy
             loss_vec = criterion(reward_pred, batch_y) + conf_penalty(reward_pred)
-            loss_vec = loss_vec * batch_mask
             loss = loss_vec.mean()
             weighted_loss = loss * args.w_reg
             weighted_loss.backward()
@@ -329,43 +316,46 @@ def train(net1, net2, train_data, optimizer1, optimizer2, num_epochs, val_data, 
     eval_loader = DataLoader(TensorDataset(*train_data), batch_size=args.batch_size, shuffle=False)
 
     # 获取 Tensor 数据用于动态切分
-    X_full, y_full, mask_full, _ = train_data
-    mask_full = mask_full.cpu().numpy()
+    X_full, y_full, _ = train_data
     prob1, prob2 = None, None 
     best_loss = float('inf')
     patience_counter = 0
 
     for epoch in range(num_epochs):
-        # 1. Calc Prob(Clean) for Observed Data
+        # 1. Calc Prob(Clean) on the full PU dataset (mask-invisible baseline)
         prob1 = eval_train_perturbed(net1, eval_loader, args, last_prob=prob1)
         prob2 = eval_train_perturbed(net2, eval_loader, args, last_prob=prob2)
 
         # 2. Split Data
-        def get_split_loaders(mask_arr, probs_arr):
-            # Unlabeled Set = Mask==1 且 Prob <= Threshold (被判定为 Noisy)
-            is_observed = (mask_arr > 0.5)
+        def get_split_loaders(probs_arr):
+            probs_arr = np.asarray(probs_arr)
+            labeled_idx = np.where(probs_arr > args.p_threshold)[0]
+            unlabeled_idx = np.where(probs_arr <= args.p_threshold)[0]
 
-            # Clean (Labeled): Observed AND High Prob
-            is_clean = is_observed & (probs_arr > args.p_threshold)
-            labeled_idx = np.where(is_clean)[0]
-            # Labeled: (X, y, w)
-            labeled_ds = TensorDataset(X_full[labeled_idx], y_full[labeled_idx], torch.tensor(probs_arr[labeled_idx], device=device).float())
-            batch_size = len(labeled_idx) if len(labeled_idx) < args.batch_size else args.batch_size
-            l_l = DataLoader(labeled_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+            if labeled_idx.size == 0:
+                k = max(1, min(args.batch_size, len(probs_arr)))
+                labeled_idx = np.argsort(-probs_arr)[:k]
+            if unlabeled_idx.size == 0:
+                k = max(1, min(args.batch_size, len(probs_arr)))
+                unlabeled_idx = np.argsort(probs_arr)[:k]
 
-            # Noisy (Unlabeled): Observed AND Low Prob
-            is_noisy = is_observed & (probs_arr <= args.p_threshold)
-            unlabeled_idx = np.where(is_noisy)[0]
-            # Unlabeled: (X, dummy) - 这里的 dummy y 实际上是原始 noisy label，但在 MixMatch 中会被 Co-Guessing 覆盖
+            labeled_ds = TensorDataset(
+                X_full[labeled_idx],
+                y_full[labeled_idx],
+                torch.tensor(probs_arr[labeled_idx], device=device).float(),
+            )
             unlabeled_ds = TensorDataset(X_full[unlabeled_idx], y_full[unlabeled_idx])
-            batch_size = len(unlabeled_idx) if len(unlabeled_idx) < args.batch_size else args.batch_size
-            u_l = DataLoader(unlabeled_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+
+            l_bs = min(args.batch_size, len(labeled_idx))
+            u_bs = min(args.batch_size, len(unlabeled_idx))
+            l_l = DataLoader(labeled_ds, batch_size=l_bs, shuffle=True, num_workers=0)
+            u_l = DataLoader(unlabeled_ds, batch_size=u_bs, shuffle=True, num_workers=0)
             return l_l, u_l
 
-        l_loader1, u_loader1 = get_split_loaders(mask_full, prob2)
+        l_loader1, u_loader1 = get_split_loaders(prob2)
         loss_mm1 = train_mixmatch_epoch(net1, net2, optimizer1, l_loader1, u_loader1, epoch, args)
 
-        l_loader2, u_loader2 = get_split_loaders(mask_full, prob1)
+        l_loader2, u_loader2 = get_split_loaders(prob1)
         loss_mm2 = train_mixmatch_epoch(net2, net1, optimizer2, l_loader2, u_loader2, epoch, args)
 
         val_loss1 = evaluate(net1, val_data, args)
@@ -415,7 +405,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("Naive Reward Modeling")
+    print("Robust DivideMix Reward Modeling (PU setting: UNK->0, mask-invisible)")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
@@ -427,21 +417,24 @@ def main():
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"])
 
-    X_train, y_train = X_train_full[mask_train], y_train_full[mask_train]
-    X_val, y_val = X_val_full[mask_val], y_val_full[mask_val]
-    print(f"Training on {X_train.shape[0]} samples.")
+    X_train, y_train = X_train_full, y_train_full
+    X_val, y_val = X_val_full, y_val_full
+    print(f"Training on {X_train.shape[0]} samples (full PU dataset).")
+    if args.binary:
+        print(f"  - y=1 (labeled positives): {(y_train == 1).sum().item()}")
+        print(f"  - y=0 (UNK treated as negative): {(y_train == 0).sum().item()}")
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
-    # Train reward model on observed data only
+    # Train reward model on full PU dataset (no mask used for training)
     print("\n" + "="*70)
     print("Step 1: Training warmup")
     print("="*70)
     train_indices = torch.arange(X_train_full.shape[0])
-    train_data = (X_train_full, y_train_full, mask_train.float(), train_indices)
+    train_data = (X_train_full, y_train_full, train_indices)
     train_loader = DataLoader(TensorDataset(*train_data), batch_size=args.batch_size, shuffle=True)
     net1 = Model(X_train_full.shape[1], args.hidden_dim).to(device)
     net2 = Model(X_train_full.shape[1], args.hidden_dim).to(device)
@@ -463,7 +456,7 @@ def main():
         args=args
     )
 
-    # Train reward model on observed data only
+    # Train reward model on full PU dataset (no mask used for training)
     print("\n" + "="*70)
     print("Step 2: Training Robust DivideMix Reward Model")
     print("="*70)
@@ -499,27 +492,24 @@ def main():
     y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
     y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
-    obs_train = mask_train_cpu > 0.5
-    obs_val = mask_val_cpu > 0.5
-
+    # Mask-blind metrics on full train/val PU labels (y_*_binary).
     metrics = {
-        "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on train": r2_score(y_train_cpu, y_train_pred),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
         "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy

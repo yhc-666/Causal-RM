@@ -118,14 +118,11 @@ def parse_arguments():
     return args
 
 
-def train(model, train_loader, optimizer, num_epochs, val_data, patience, args, train_size, global_mask):
+def train(model, train_loader, optimizer, num_epochs, val_data, patience, args, train_size):
     """
-    Train reward model using naive loss:
-    L = mask * (error)
-    
-    where:
-        error = ℓ(r(x), y) - loss between predicted and true reward
-        mask = observation indicator (1 if observed, 0 otherwise)
+    LabelWave early-stopping criterion based on prediction changes (PC).
+
+    PU setting (mask-invisible): train on full dataset with y_train_binary (UNK->0).
     """
     if not args.is_training: return
 
@@ -138,7 +135,7 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args, 
 
     previous_predictions = torch.zeros(train_size, dtype=torch.long if args.monitor_on == 'acc' else torch.float32)
     current_predictions = torch.zeros(train_size, dtype=torch.long if args.monitor_on == 'acc' else torch.float32)
-    valid_indices = torch.nonzero(global_mask.cpu() > 0.5).squeeze()
+    valid_indices = torch.arange(train_size)
 
     for epoch in range(num_epochs):
         epoch_loss = 0
@@ -146,16 +143,12 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args, 
         model.train()
 
         bar = tqdm(train_loader, desc=f"Training Naive Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, batch_y, batch_mask, batch_indices in bar:
+        for batch_X, batch_y, batch_indices in bar:
             optimizer.zero_grad()
             reward_pred = model(batch_X).squeeze()
             error = criterion(reward_pred, batch_y)  # Loss between predicted and true reward
 
-            mask_float = batch_mask.float()
-            loss_per_sample = mask_float * error
-
-            # Average over batch
-            loss = torch.mean(loss_per_sample)
+            loss = torch.mean(error)
             # Apply task weight
             weighted_loss = args.w_reg * loss
 
@@ -179,7 +172,6 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args, 
         pc_value = 0
         pc_smoothed = 0
         if epoch > 0: # We need at least one previous epoch
-            # Only calculate changes on OBSERVED samples (mask=1)
             if args.monitor_on == 'acc':
                 diff = (current_predictions[valid_indices] != previous_predictions[valid_indices])
                 pc_value = diff.sum()
@@ -242,7 +234,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("LabelWave Reward Modeling")
+    print("LabelWave Reward Modeling (PU setting: UNK->0, mask-invisible)")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
@@ -254,21 +246,24 @@ def main():
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"])
 
-    X_train, y_train = X_train_full[mask_train], y_train_full[mask_train]
-    X_val, y_val = X_val_full[mask_val], y_val_full[mask_val]
-    print(f"Training on {X_train.shape[0]} samples.")
+    X_train, y_train = X_train_full, y_train_full
+    X_val, y_val = X_val_full, y_val_full
+    print(f"Training on {X_train.shape[0]} samples (full PU dataset).")
+    if args.binary:
+        print(f"  - y=1 (labeled positives): {(y_train == 1).sum().item()}")
+        print(f"  - y=0 (UNK treated as negative): {(y_train == 0).sum().item()}")
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
-    # Train reward model on observed data only
+    # Train reward model on full PU dataset (no mask used for training)
     print("\n" + "="*70)
     print("Step 2: Training Reward Model")
     print("="*70)
     train_indices = torch.arange(X_train_full.shape[0])
-    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, mask_train.float(), train_indices), batch_size=args.batch_size, shuffle=True)
+    train_loader = DataLoader(TensorDataset(X_train_full, y_train_full, train_indices), batch_size=args.batch_size, shuffle=True)
     model = Model(X_train.shape[1], args.hidden_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2_reg)
 
@@ -281,7 +276,6 @@ def main():
         patience=args.patience,
         args=args,
         train_size=X_train_full.shape[0], # Pass total size for tensor initialization
-        global_mask=mask_train # Pass global mask to filter PC calculation
     )
     model.load_state_dict(torch.load(f'{args.output_dir}/best_model.pth'))
     model.eval()
@@ -299,27 +293,24 @@ def main():
         y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
         y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
-    obs_train = mask_train_cpu > 0.5
-    obs_val = mask_val_cpu > 0.5
-
+    # Mask-blind metrics on full train/val PU labels (y_*_binary).
     metrics = {
-        "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on train": r2_score(y_train_cpu, y_train_pred),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
         "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy

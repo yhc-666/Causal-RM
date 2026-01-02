@@ -16,6 +16,26 @@ from tqdm import tqdm
 from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary
 
 
+def calculate_propensity(labels, alpha, target_observation_rate=0.2):
+    """
+    Copy from simulate_bias_pu.py (do not import/modify simulate_bias_pu.py).
+    """
+    propensity = np.ones_like(labels)
+    labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
+
+    mask_lt_4 = labels < labels.max()
+    propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
+
+    mask_ge_4 = labels >= labels.max()
+    propensity[mask_ge_4] = 1.0
+
+    expected_observations = target_observation_rate * len(labels)
+    k = expected_observations / np.sum(propensity)
+    propensity = propensity * k
+
+    return propensity
+
+
 class Model(nn.Module):
     """
     Multitask neural network with three outputs:
@@ -126,11 +146,13 @@ def parse_arguments():
 def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
     """
     Train multitask model with combined loss:
-    L_total = w_prop * L_prop + w_reg * L_IPS
-    
-    where:
-        - L_prop: Propensity prediction loss
-        - L_IPS: IPS loss
+      PU setting (mask-invisible):
+        - Treat all `y_train_binary==0` as negative (UNK->0).
+        - Use label-based propensity target computed by `calculate_propensity(y_train_binary, alpha)`.
+
+      L_total = w_prop * L_prop + w_reg * L_IPS
+        - L_prop: MSE(π̂(x), π_target)
+        - L_IPS: mean( error / clip(π̂(x), clip_min, 1) )
     """
     if not args.is_training: return
 
@@ -149,7 +171,7 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
         epoch_loss_ips = 0.0
 
         bar = tqdm(train_loader, desc=f"Training Multitask Model Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
-        for batch_X, batch_y, batch_mask in bar:
+        for batch_X, batch_y, batch_propensity_target in bar:
             optimizer.zero_grad()
             outputs = model(batch_X)
             prop_logits = outputs['propensity'].squeeze()
@@ -158,13 +180,13 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
             prop_pred = F.sigmoid(prop_logits)
             prop_clipped = torch.clip(prop_pred, args.clip_min, 1.0).detach()
 
-            # Task 1: Propensity loss L_prop = ℓ(π(x), mask)
-            loss_prop = criterion_prop(prop_pred, batch_mask.float())
+            # Task 1: Propensity loss L_prop = ℓ(π̂(x), π_target)
+            target = torch.clip(batch_propensity_target.float(), 0.0, 1.0)
+            loss_prop = criterion_prop(prop_pred, target)
 
-            # Task 2: IPS loss L_IPS = mask * (error) / π
+            # Task 2: IPS-style loss on full PU dataset: (error) / π
             error = criterion_reward_none(reward_pred, batch_y)
-            mask_float = batch_mask.float()
-            ips_loss_per_sample = mask_float * error / prop_clipped
+            ips_loss_per_sample = error / prop_clipped
             loss_ips = torch.mean(ips_loss_per_sample)
 
             # Combined multitask loss
@@ -217,7 +239,7 @@ def evaluate_multitask(model, val_data, args):
     criterion_reward = nn.MSELoss() if not args.binary else nn.BCEWithLogitsLoss()
 
     with torch.no_grad():
-        X, y, mask = val_data
+        X, y, mask, propensity_target = val_data
         outputs = model(X)
 
         prop_pred = outputs['propensity'].squeeze()
@@ -225,13 +247,11 @@ def evaluate_multitask(model, val_data, args):
         reward_pred = outputs['reward'].squeeze()
 
         # Propensity loss
-        loss_prop = criterion_prop(prop_pred, mask.float())
+        target = torch.clip(propensity_target.float(), 0.0, 1.0)
+        loss_prop = criterion_prop(prop_pred, target)
 
-        # Reward loss (on observed samples)
-        observed = mask > 0.5
-        loss_reward = torch.tensor(0.0, device=X.device)
-        if observed.sum() > 0:
-            loss_reward = criterion_reward(reward_pred[observed], y[observed])
+        # Reward loss (mask-blind, on full PU validation labels)
+        loss_reward = criterion_reward(reward_pred, y)
 
         # Combined validation loss (weighted)
         val_loss = (
@@ -255,7 +275,7 @@ def main():
     print(f"Using device: {device}")
 
     print("="*70)
-    print("Multitask Inverse Propensity Score (IPS) Reward Modeling")
+    print("Multitask IPS Reward Modeling (PU setting: UNK->0, mask-invisible)")
     print("="*70)
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
@@ -267,13 +287,23 @@ def main():
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
             load_data(embedding_file, device, keys=["X_train", "y_train", "mask_train", "X_val", "y_val", "mask_val", "X_test", "y_test"])
 
-    X_train, y_train = X_train_full[mask_train], y_train_full[mask_train]
-    X_val, y_val = X_val_full[mask_val], y_val_full[mask_val]
-    print(f"Training on {X_train.shape[0]} samples.")
+    X_train, y_train = X_train_full, y_train_full
+    X_val, y_val = X_val_full, y_val_full
+    print(f"Training on {X_train.shape[0]} samples (full PU dataset).")
+    if args.binary:
+        print(f"  - y=1 (labeled positives): {(y_train == 1).sum().item()}")
+        print(f"  - y=0 (UNK treated as negative): {(y_train == 0).sum().item()}")
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
-    val_data = (X_val_full, y_val_full, mask_val.float())
+    propensity_train_np = calculate_propensity(y_train_full.detach().cpu().numpy(), args.alpha)
+    propensity_val_np = calculate_propensity(y_val_full.detach().cpu().numpy(), args.alpha)
+    propensity_train_np = np.clip(propensity_train_np, 0.0, 1.0)
+    propensity_val_np = np.clip(propensity_val_np, 0.0, 1.0)
+    propensity_train = torch.from_numpy(propensity_train_np).to(device=device, dtype=torch.float32)
+    propensity_val = torch.from_numpy(propensity_val_np).to(device=device, dtype=torch.float32)
+
+    val_data = (X_val_full, y_val_full, mask_val.float(), propensity_val)
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
     # Multitask learning: single model with three outputs
@@ -283,7 +313,7 @@ def main():
     print(f"Task weights: w_prop={args.w_prop}, w_reg={args.w_reg}")
     print("Combined loss: L_total = w_prop * L_prop + w_reg * L_IPS")
     train_loader = DataLoader(
-        TensorDataset(X_train_full, y_train_full, mask_train.float()), 
+        TensorDataset(X_train_full, y_train_full, propensity_train),
         batch_size=args.batch_size, 
         shuffle=True
     )
@@ -321,37 +351,34 @@ def main():
         prop_train_pred, y_train_pred, y_train_cpu, mask_train_cpu = get_preds(
             X_train_full, y_train_full, mask_train.float()
         )
-        prop_val_pred, y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
+        prop_val_pred, y_val_pred, y_val_cpu, mask_val_cpu = get_preds(
+            X_val_full, y_val_full, mask_val.float()
+        )
         prop_test_pred, y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
-    obs_train = mask_train_cpu > 0.5
-    obs_val = mask_val_cpu > 0.5
-
+    # Mask-blind metrics on full train/val PU labels (y_*_binary).
     metrics = {
-        "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on train": r2_score(y_train_cpu, y_train_pred),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
         "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
-        "R2 prop on train": r2_score(mask_train_cpu, prop_train_pred),
-        "R2 prop on val": r2_score(mask_val_cpu, prop_val_pred),
-        "MAE prop on train": mean_absolute_error(mask_train_cpu, prop_train_pred),
-        "MAE prop on val": mean_absolute_error(mask_val_cpu, prop_val_pred),
-        "Max error prop on train": np.max(np.abs(mask_train_cpu - prop_train_pred)),
-        "Max error prop on val": np.max(np.abs(mask_val_cpu - prop_val_pred)),
+        "R2 prop_target on train": r2_score(propensity_train_np, prop_train_pred),
+        "R2 prop_target on val": r2_score(propensity_val_np, prop_val_pred),
+        "MAE prop_target on train": mean_absolute_error(propensity_train_np, prop_train_pred),
+        "MAE prop_target on val": mean_absolute_error(propensity_val_np, prop_val_pred),
     }
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy
     print("\n--- Final Performance ---")
