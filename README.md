@@ -21,22 +21,9 @@ causal-rm/
 ├── simulate_bias_pu.py           # Stage 2: 偏差/PU 模拟
 ├── simulate_bias_pu.sh           # Stage 2 批处理脚本
 │
-├── benchmark_*.py                # Stage 3: 各种去偏方法的 benchmark
-│   ├── benchmark_naive.py        #   - Naive (无去偏)
-│   ├── benchmark_ips.py          #   - IPS (Inverse Propensity Scoring)
-│   ├── benchmark_dr.py           #   - DR (Doubly Robust)
-│   ├── benchmark_mtips.py        #   - MT-IPS (Multi-Task IPS)
-│   ├── benchmark_mtdr.py         #   - MT-DR (Multi-Task DR)
-│   ├── benchmark_sdr.py          #   - SDR (Self-Debiasing)
-│   ├── benchmark_ome_ips.py      #   - OME-IPS
-│   ├── benchmark_ome_dr.py       #   - OME-DR
-│   ├── benchmark_co_teaching.py  #   - Co-Teaching (噪声标签)
-│   ├── benchmark_codis.py        #   - CoDis
-│   ├── benchmark_cvib.py         #   - CVIB
-│   ├── benchmark_labelwave.py    #   - LabelWave
-│   ├── benchmark_kmeidtm.py      #   - KME-IDTM
-│   ├── benchmark_eps_softmax.py  #   - EPS-Softmax
-│   └── benchmark_robust_dividemix.py  # - DivideMix
+├── models_debias/                # Stage 3: 去偏方法 (debias, mask-blind PU setting)
+├── models_pu/                    # Stage 3: PU 方法 (PU-only)
+├── models_debias_pu/             # Stage 3: 去偏 + PU 方法 (debias + PU)
 │
 ├── merge_rm.py                   # 合并多个 RM 结果
 ├── merge_rm.sh
@@ -233,16 +220,19 @@ bash simulate_bias_pu.sh
 
 ```bash
 # Naive baseline (无去偏)
-python benchmark_naive.py --data_name saferlhf --alpha 0.1
+python models_debias/benchmark_naive.py --data_name saferlhf --alpha 0.1
 
 # IPS (Inverse Propensity Scoring)
-python benchmark_ips.py --data_name saferlhf --alpha 0.1
+python models_debias/benchmark_ips.py --data_name saferlhf --alpha 0.1
 
 # Doubly Robust
-python benchmark_dr.py --data_name saferlhf --alpha 0.1
+python models_debias/benchmark_dr.py --data_name saferlhf --alpha 0.1
+
+# Counter-IF (debias + PU)
+python models_debias_pu/benchmark_counterif.py --data_name hs --alpha 0.2
 ```
 
-### 通用参数 (`benchmark_*.py`)
+### 通用参数 (`models_*/benchmark_*.py`)
 
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
@@ -262,6 +252,7 @@ python benchmark_dr.py --data_name saferlhf --alpha 0.1
 | MT-IPS | 偏差校正 | 多任务 IPS |
 | MT-DR | 偏差校正 | 多任务 DR |
 | SDR | 偏差校正 | 自去偏 |
+| Counter-IF | 偏差+PU | 分组插补 + pointwise/pairwise + IPM(Wasserstein) |
 | Co-Teaching | PU/噪声校正 | 双网络互教 |
 | DivideMix | PU/噪声校正 | 混合样本学习 |
 | CVIB | PU/噪声校正 | 变分信息瓶颈 |
@@ -282,9 +273,9 @@ bash data_prepare.sh
 bash simulate_bias_pu.sh
 
 # 4. 运行 benchmark
-python benchmark_naive.py --data_name ufb --alpha 0.1
-python benchmark_ips.py --data_name ufb --alpha 0.1
-python benchmark_dr.py --data_name ufb --alpha 0.1
+python models_debias/benchmark_naive.py --data_name ufb --alpha 0.1
+python models_debias/benchmark_ips.py --data_name ufb --alpha 0.1
+python models_debias/benchmark_dr.py --data_name ufb --alpha 0.1
 
 # 5. 分析结果
 jupyter notebook analyze/causal_rm.ipynb

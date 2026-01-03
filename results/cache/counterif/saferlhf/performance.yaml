@@ -1,0 +1,27 @@
+AUROC on eval: 0.38519597196980637
+AUROC on test: 0.18611718983153958
+Best threshold on eval: 0.3395465016365051
+F1 on eval (best thresh): 0.25649627912627987
+Group train n_dp: 17620
+Group train n_he: 41530
+Group train n_hu: 10069
+Group train n_un: 49032
+Group val n_dp: 4343
+Group val n_he: 10462
+Group val n_hu: 2524
+Group val n_un: 12234
+MAE on eval: 0.38918742537498474
+MAE on test: 0.48846176266670227
+NDCG on eval: 0.7378454910355209
+NDCG on test: 0.8367634760556304
+NLL on eval: 0.5159898905077873
+NLL on test: 0.7217141864232332
+Pearson on eval: -0.19752147793769836
+Pearson on test: -0.5712486505508423
+R2 on test: -0.06026291847229004
+R2 on train: -0.29832708835601807
+R2 on val: -0.30841076374053955
+RMSE on eval: 0.4049402912889764
+RMSE on test: 0.5130923523082593
+Recall on eval: 0.9682247294496892
+Recall on test: 0.9441199893814707

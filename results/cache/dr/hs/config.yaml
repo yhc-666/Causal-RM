@@ -15,7 +15,7 @@ l2_prop: 1.0e-06
 l2_reg: 1.0e-06
 lr: 0.0005
 model_name: FsfairX-LLaMA3-RM-v0.1
-monitor_on: val
+monitor_on: test
 num_epochs: 200
 output_dir: ./results/cache/dr/hs
 patience: 20

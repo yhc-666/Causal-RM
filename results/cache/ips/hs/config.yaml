@@ -18,7 +18,7 @@ monitor_on: val
 num_epochs: 200
 output_dir: ./results/cache/ips/hs
 patience: 20
-rerun: false
+rerun: true
 seed: 42
 use_tqdm: true
 w_prop: 1.0

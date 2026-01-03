@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary
+from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary, add_tuned_recall_metrics
 
 
 class Model(nn.Module):
@@ -67,6 +67,7 @@ def parse_arguments():
     dataset_defaults = {
         "saferlhf": {
             "alpha": 0.2,
+            "class_prior": 0.455,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-6,  # L2 regularization
@@ -74,6 +75,7 @@ def parse_arguments():
         },
         "hs": {
             "alpha": 0.2,
+            "class_prior": 0.693,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-5,  # L2 regularization
@@ -236,8 +238,8 @@ def main():
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
         embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
-        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
-            load_data(embedding_file, device, keys=["X_train", "y_train_binary", "mask_train", "X_val", "y_val_binary", "mask_val", "X_test", "y_test_binary"])
+        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, y_val_true, mask_val, X_test, y_test = \
+            load_data(embedding_file, device, keys=["X_train", "y_train_binary", "mask_train", "X_val", "y_val_binary", "y_val_binary_true", "mask_val", "X_test", "y_test_binary"])
     else:
         embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}.safetensors"
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
@@ -257,6 +259,7 @@ def main():
     print(f"Testing on {X_test.shape[0]} samples.")
 
     val_data = (X_val_full, y_val_full, mask_val.float())
+    val_data_true = (X_val_full, y_val_true, mask_val.float()) if args.binary else val_data
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
     # Train reward model on all data (NNPU learning approach)
@@ -272,7 +275,7 @@ def main():
         train_loader=train_loader,
         optimizer=optimizer,
         num_epochs=args.num_epochs,
-        val_data=val_data,
+        val_data=val_data_true,
         patience=args.patience,
         args=args
     )
@@ -292,29 +295,28 @@ def main():
         y_val_pred, y_val_cpu, mask_val_cpu = get_preds(*val_data)
         y_test_pred, y_test_cpu, _ = get_preds(*test_data)
 
-    # Only evaluate reward metrics on observed samples
+    # Train metrics on observed samples; eval metrics on full PU labels (mask-blind).
     obs_train = mask_train_cpu > 0.5
     obs_val = mask_val_cpu > 0.5
 
     metrics = {
         "R2 on train": r2_score(y_train_cpu[obs_train], y_train_pred[obs_train]) if obs_train.sum() > 0 else float('nan'),
-        "R2 on val": r2_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "R2 on val": r2_score(y_val_cpu, y_val_pred),
         "R2 on test": r2_score(y_test_cpu, y_test_pred),
-        "MAE on eval": mean_absolute_error(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "MAE on eval": mean_absolute_error(y_val_cpu, y_val_pred),
         "MAE on test": mean_absolute_error(y_test_cpu, y_test_pred),
-        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu[obs_val], y_val_pred[obs_val])) if obs_val.sum() > 0 else float('nan'),
+        "RMSE on eval": np.sqrt(mean_squared_error(y_val_cpu, y_val_pred)),
         "RMSE on test": np.sqrt(mean_squared_error(y_test_cpu, y_test_pred)),
-        "AUROC on eval": roc_auc_score(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "AUROC on eval": roc_auc_score(y_val_cpu, y_val_pred),
         "AUROC on test": roc_auc_score(y_test_cpu, y_test_pred),
-        "Pearson on eval": pearsonr(y_val_cpu[obs_val], y_val_pred[obs_val])[0] if obs_val.sum() > 0 else float('nan'),
+        "Pearson on eval": pearsonr(y_val_cpu, y_val_pred)[0],
         "Pearson on test": pearsonr(y_test_cpu, y_test_pred)[0],
-        "NLL on eval": compute_nll(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NLL on eval": compute_nll(y_val_cpu, y_val_pred),
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
-        "NDCG on eval": compute_ndcg_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
+        "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu[obs_val], y_val_pred[obs_val]) if obs_val.sum() > 0 else float('nan'),
-        "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
     }
+    add_tuned_recall_metrics(metrics, y_val_cpu, y_val_pred, y_test_cpu, y_test_pred)
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy
     print("\n--- Final Performance ---")
     for metric, value in metrics.items():

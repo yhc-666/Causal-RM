@@ -6,7 +6,7 @@ import yaml
 from collections import defaultdict
 import numpy as np
 from safetensors.torch import load_file
-from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, r2_score, log_loss
+from sklearn.metrics import roc_auc_score, mean_squared_error, mean_absolute_error, r2_score, log_loss, precision_recall_curve
 
 
 def seed_everything(seed):
@@ -294,6 +294,46 @@ def compute_recall_binary(y_true, y_pred_proba, threshold=0.5):
     tp = np.sum((y_pred_binary == 1) & (y_true == 1))
     fn = np.sum((y_pred_binary == 0) & (y_true == 1))
     return tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+
+def select_threshold_by_f1(y_true, y_pred_proba):
+    """选择使 F1 最大的概率阈值（用于二分类）。"""
+    y_true = np.asarray(y_true).astype(int)
+    y_pred_proba = np.asarray(y_pred_proba)
+    if y_true.size == 0:
+        return float("nan"), float("nan")
+
+    n_pos = int(np.sum(y_true == 1))
+    n_neg = int(np.sum(y_true == 0))
+    if n_pos == 0:
+        return 1.0, 0.0
+    if n_neg == 0:
+        return 0.0, 1.0
+
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_pred_proba)
+    if thresholds.size == 0:
+        return 0.5, 0.0
+
+    f1_scores = 2 * precisions[:-1] * recalls[:-1] / (precisions[:-1] + recalls[:-1] + 1e-12)
+    best_idx = int(np.argmax(f1_scores))
+    return float(thresholds[best_idx]), float(f1_scores[best_idx])
+
+
+def add_tuned_recall_metrics(metrics, y_val_true, y_val_pred_proba, y_test_true, y_test_pred_proba, prefix=""):
+    """在 val 上选阈值（F1 最大），再计算 val/test recall，并写回到 metrics。
+
+    注意：会覆盖（同名）metrics 里的 `Recall on eval` / `Recall on test`。
+    """
+    best_thr, best_f1 = select_threshold_by_f1(y_val_true, y_val_pred_proba)
+    metrics[f"{prefix}Best threshold on eval"] = best_thr
+    metrics[f"{prefix}F1 on eval (best thresh)"] = best_f1
+    metrics[f"{prefix}Recall on eval"] = compute_recall_binary(
+        y_val_true, y_val_pred_proba, threshold=best_thr
+    )
+    metrics[f"{prefix}Recall on test"] = compute_recall_binary(
+        y_test_true, y_test_pred_proba, threshold=best_thr
+    )
+    return metrics
 
 
 if __name__ == "__main__":

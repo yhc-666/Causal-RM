@@ -36,6 +36,7 @@ Output format (safetensors):
         # Binary labels (PU setting for train/val)
         "y_train_binary": Tensor[N_train],  # observed: true label (0/1), unobserved: 0 (unlabeled)
         "y_val_binary": Tensor[N_val],      # observed: true label (0/1), unobserved: 0 (unlabeled)
+        "y_val_binary_true": Tensor[N_val], # clean binary label (0/1), before PU masking (oracle, for monitoring)
         "y_test_binary": Tensor[N_test],    # 0 or 1, clean (no bias)
 
         # Propensity scores for bias correction (e.g., IPS)
@@ -367,6 +368,7 @@ output = {
     "y_test": torch.from_numpy(y_test),
     "y_train_binary": torch.from_numpy(y_train_binary),
     "y_val_binary": torch.from_numpy(y_val_binary),
+    "y_val_binary_true": torch.from_numpy(y_val_binary_true),
     "y_test_binary": torch.from_numpy(y_test_binary),
     "propensity_train": torch.from_numpy(propensity_train),
     "propensity_val": torch.from_numpy(propensity_val),

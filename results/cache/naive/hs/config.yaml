@@ -15,7 +15,7 @@ monitor_on: val
 num_epochs: 200
 output_dir: ./results/cache/naive/hs
 patience: 20
-rerun: false
+rerun: true
 seed: 42
 use_tqdm: true
 w_reg: 1.0

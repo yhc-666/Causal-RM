@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary
+from tools.utils import seed_everything, str2bool, drop_params, f1_score, load_data, save_metrics, refine_dict, compute_nll, compute_ndcg_binary, compute_recall_binary, add_tuned_recall_metrics
 
 
 def calculate_propensity(labels, alpha, target_observation_rate=0.2):
@@ -268,36 +268,20 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
 
 def evaluate_multitask(model, val_data, args):
     """
-    Evaluate multitask model on validation data.
-    Returns the combined validation loss.
+    Validation loss for early-stopping/monitoring.
+
+    For binary PU experiments we use the *clean* oracle label `y_val_binary_true` with BCE on the reward head,
+    and treat it as the single `val loss` across all methods for fair comparison.
     """
     model.eval()
-    criterion_prop = nn.MSELoss()
     criterion_reward = nn.MSELoss() if not args.binary else nn.BCEWithLogitsLoss()
 
     with torch.no_grad():
-        X, y, mask, propensity_target = val_data
+        X, y, _mask, _propensity_target = val_data
         outputs = model(X)
-
-        prop_pred = outputs['propensity'].squeeze()
-        prop_pred = F.sigmoid(prop_pred)
-        baseline_pred = outputs['baseline'].squeeze()
         reward_pred = outputs['reward'].squeeze()
-
-        # Propensity loss
-        target = torch.clip(propensity_target.float(), 0.0, 1.0)
-        loss_prop = criterion_prop(prop_pred, target)
-
-        # Reward loss (mask-blind, on full PU validation labels)
-        loss_reward = criterion_reward(reward_pred, y)
-
-        # Combined validation loss (weighted)
-        val_loss = (
-            args.w_prop * loss_prop.item() +
-            args.w_reg * loss_reward.item()
-        )
-
-    return val_loss
+        loss_reward = criterion_reward(reward_pred, y.float())
+    return loss_reward.item()
 
 
 def main():
@@ -318,8 +302,8 @@ def main():
     print("Loading embeddings and labels from Safetensors file...")
     if args.binary:
         embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
-        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
-            load_data(embedding_file, device, keys=["X_train", "y_train_binary", "mask_train", "X_val", "y_val_binary", "mask_val", "X_test", "y_test_binary"])
+        X_train_full, y_train_full, mask_train, X_val_full, y_val_full, y_val_true, mask_val, X_test, y_test = \
+            load_data(embedding_file, device, keys=["X_train", "y_train_binary", "mask_train", "X_val", "y_val_binary", "y_val_binary_true", "mask_val", "X_test", "y_test_binary"])
     else:
         embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}.safetensors"
         X_train_full, y_train_full, mask_train, X_val_full, y_val_full, mask_val, X_test, y_test = \
@@ -342,6 +326,7 @@ def main():
     propensity_val = torch.from_numpy(propensity_val_np).to(device=device, dtype=torch.float32)
 
     val_data = (X_val_full, y_val_full, mask_val.float(), propensity_val)
+    val_data_true = (X_val_full, y_val_true, mask_val.float(), propensity_val) if args.binary else val_data
     test_data = (X_test, y_test, torch.ones_like(y_test))  # mask not used for test
 
     # Multitask learning: single model with three outputs
@@ -365,7 +350,7 @@ def main():
         train_loader=train_loader,
         optimizer=optimizer,
         num_epochs=args.num_epochs,
-        val_data=val_data,
+        val_data=val_data_true,
         patience=args.patience,
         args=args
     )
@@ -411,13 +396,12 @@ def main():
         "NLL on test": compute_nll(y_test_cpu, y_test_pred),
         "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
-        "Recall on eval": compute_recall_binary(y_val_cpu, y_val_pred),
-        "Recall on test": compute_recall_binary(y_test_cpu, y_test_pred),
         "R2 prop_target on train": r2_score(propensity_train_np, prop_train_pred),
         "R2 prop_target on val": r2_score(propensity_val_np, prop_val_pred),
         "MAE prop_target on train": mean_absolute_error(propensity_train_np, prop_train_pred),
         "MAE prop_target on val": mean_absolute_error(propensity_val_np, prop_val_pred),
     }
+    add_tuned_recall_metrics(metrics, y_val_cpu, y_val_pred, y_test_cpu, y_test_pred)
     metrics = refine_dict(metrics)  # avoid .item() error w.r.t version of numpy
     print("\n--- Final Performance ---")
     for metric, value in metrics.items():

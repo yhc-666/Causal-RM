@@ -42,6 +42,8 @@ TASKS=(
     "models_debias:benchmark_labelwave.py"
     "models_debias:benchmark_eps_softmax.py"
     "models_debias:benchmark_robust_dividemix.py"
+    # models_debias_pu (debias + PU)
+    "models_debias_pu:benchmark_counterif.py"
     # models_pu (10)
     "models_pu:benchmark_bpr.py"
     "models_pu:benchmark_ubpr.py"
