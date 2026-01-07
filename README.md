@@ -230,6 +230,9 @@ python models_debias/benchmark_dr.py --data_name saferlhf --alpha 0.1
 
 # Counter-IF (debias + PU)
 python models_debias_pu/benchmark_counterif.py --data_name hs --alpha 0.2
+
+# ReCRec-F (debias + PU)
+python models_debias_pu/benchmark_recrec.py --data_name hs --alpha 0.2 --variant F
 ```
 
 ### 通用参数 (`models_*/benchmark_*.py`)
@@ -253,6 +256,7 @@ python models_debias_pu/benchmark_counterif.py --data_name hs --alpha 0.2
 | MT-DR | 偏差校正 | 多任务 DR |
 | SDR | 偏差校正 | 自去偏 |
 | Counter-IF | 偏差+PU | 分组插补 + pointwise/pairwise + IPM(Wasserstein) |
+| ReCRec-F | 偏差+PU | E-M 推断曝光/偏好：P(y=1)=mu(x)*gamma(x) |
 | Co-Teaching | PU/噪声校正 | 双网络互教 |
 | DivideMix | PU/噪声校正 | 混合样本学习 |
 | CVIB | PU/噪声校正 | 变分信息瓶颈 |

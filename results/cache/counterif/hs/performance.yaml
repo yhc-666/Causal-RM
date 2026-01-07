@@ -1,27 +1,42 @@
-AUROC on eval: 0.4652559223999043
-AUROC on test: 0.40220009832841697
-Best threshold on eval: 0.28198784589767456
-F1 on eval (best thresh): 0.3384942678167614
+AUROC on eval: 0.7038090070443128
+AUROC on eval (oracle): 0.8199295698506608
+AUROC on test: 0.813037191277691
+Best threshold on eval: 0.28737789392471313
+F1 on eval (best thresh): 0.4345941686363164
 Group train n_dp: 5625
-Group train n_he: 18104
-Group train n_hu: 2265
-Group train n_un: 2270
+Group train n_he: 21097
+Group train n_hu: 1542
+Group train n_un: 0
+Group val DP pos_true_rate: 1.0
+Group val HE pos_true_rate: 0.6566482782363892
+Group val HU pos_true_rate: 0.10904255509376526
+Group val UN pos_true_rate: .nan
 Group val n_dp: 1434
-Group val n_he: 4467
-Group val n_hu: 564
-Group val n_un: 602
-MAE on eval: 0.37090814113616943
-MAE on test: 0.5800802111625671
-NDCG on eval: 0.7645704099719625
-NDCG on test: 0.9124505032363758
-NLL on eval: 0.5212348331041932
-NLL on test: 0.9693559271839133
-Pearson on eval: -0.05106601119041443
-Pearson on test: -0.15489625930786133
-R2 on test: -0.7460600137710571
-R2 on train: -0.043981194496154785
-R2 on val: -0.039452552795410156
-RMSE on eval: 0.4100262935569412
-RMSE on test: 0.6142344265657074
-Recall on eval: 0.99860529986053
-Recall on test: 0.9950980392156863
+Group val n_he: 5257
+Group val n_hu: 376
+Group val n_un: 0
+MAE on eval: 0.34204617142677307
+MAE on eval (oracle): 0.529812753200531
+MAE on test: 0.5253552794456482
+NDCG on eval: 0.8507040288759705
+NDCG on eval (oracle): 0.9858735838912107
+NDCG on test: 0.9839420033110239
+NLL on eval: 0.4770798767381214
+NLL on eval (oracle): 0.8971226672687627
+NLL on test: 0.8932186423143544
+Oracle Best threshold on eval: 0.15460537374019623
+Oracle F1 on eval (best thresh): 0.8639613706003022
+Oracle Recall on eval: 0.9441851024964482
+Oracle Recall on test: 0.934640522875817
+Pearson on eval: 0.2849247455596924
+Pearson on eval (oracle): 0.5282249450683594
+Pearson on test: 0.5219393372535706
+R2 on eval (oracle): -0.6211725473403931
+R2 on test: -0.5737488269805908
+R2 on train: 0.0410270094871521
+R2 on val: 0.044810354709625244
+RMSE on eval: 0.3930557723413565
+RMSE on eval (oracle): 0.5850293815195393
+RMSE on test: 0.5831392481904087
+Recall on eval: 0.7691771269177127
+Recall on test: 0.6266339869281046

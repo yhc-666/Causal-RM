@@ -99,17 +99,29 @@ def parse_arguments():
     dataset_defaults = {
         "saferlhf": {
             "alpha": 0.2,
-            "batch_size": 512,
-            "lr": 0.0005,
-            "l2_reg": 1e-6,
-            "w_reg": 1.0,
+            # Tuned for MAE on eval (oracle)
+            "lr": 1.0175341376835737e-4,
+            "l2_reg": 2.601625413210664e-5,
+            "w_reg": 0.1,
+            "clip_min": 1e-2,
+            "batch_size": 1024,
+            "num_neg": 5,
+            "num_epochs": 200,
+            "patience": 10,
+            "monitor_on": "val",
         },
         "hs": {
             "alpha": 0.2,
-            "batch_size": 512,
-            "lr": 0.0005,
-            "l2_reg": 1e-5,
-            "w_reg": 1.0,
+            # Tuned for MAE on eval (oracle)
+            "lr": 9.969266538190683e-4,
+            "l2_reg": 2.6437574326785445e-8,
+            "w_reg": 2.0,
+            "clip_min": 1e-4,
+            "batch_size": 1024,
+            "num_neg": 1,
+            "num_epochs": 60,
+            "patience": 10,
+            "monitor_on": "val",
         },
         "ufb": {
             "alpha": 0.2,
@@ -453,7 +465,22 @@ def main():
         "NDCG on eval": compute_ndcg_binary(y_val_cpu, y_val_pred),
         "NDCG on test": compute_ndcg_binary(y_test_cpu, y_test_pred),
     }
+
+    # Oracle eval metrics (clean labels before PU masking). Useful for tuning without peeking test.
+    y_val_true_cpu = y_val_true.detach().cpu().numpy()
+    metrics.update(
+        {
+            "R2 on eval (oracle)": r2_score(y_val_true_cpu, y_val_pred),
+            "MAE on eval (oracle)": mean_absolute_error(y_val_true_cpu, y_val_pred),
+            "RMSE on eval (oracle)": np.sqrt(mean_squared_error(y_val_true_cpu, y_val_pred)),
+            "AUROC on eval (oracle)": roc_auc_score(y_val_true_cpu, y_val_pred),
+            "Pearson on eval (oracle)": pearsonr(y_val_true_cpu, y_val_pred)[0],
+            "NLL on eval (oracle)": compute_nll(y_val_true_cpu, y_val_pred),
+            "NDCG on eval (oracle)": compute_ndcg_binary(y_val_true_cpu, y_val_pred),
+        }
+    )
     add_tuned_recall_metrics(metrics, y_val_cpu, y_val_pred, y_test_cpu, y_test_pred)
+    add_tuned_recall_metrics(metrics, y_val_true_cpu, y_val_pred, y_test_cpu, y_test_pred, prefix="Oracle ")
     metrics = refine_dict(metrics)
     print("\n--- Final Performance ---")
     for metric, value in metrics.items():

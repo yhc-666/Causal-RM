@@ -47,7 +47,7 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "pu_naive",
         "data_name": pre_args.data_name,
-        "alpha": 0.2,
+        "alpha": 0.5,
         "lr": 0.0002,
         "clip_min": 0.1,
         "num_epochs": 200,
@@ -57,7 +57,7 @@ def parse_arguments():
         "seed": 42,
         "l2_reg": 1e-6,  # L2 regularization
         "w_reg": 1.0,  # Task weight
-        "rerun": False,
+        "rerun": True,
         "monitor_on": "val",
         "binary": True,
         "use_tqdm": True,
@@ -72,7 +72,7 @@ def parse_arguments():
             "w_reg": 1.0,  # Task weight
         },
         "hs": {
-            "alpha": 0.2,
+            "alpha": 0.5,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-5,  # L2 regularization

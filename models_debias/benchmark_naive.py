@@ -65,25 +65,25 @@ def parse_arguments():
 
     dataset_defaults = {
         "saferlhf": {
-            "alpha": 0.2,
+            "alpha": 0.5,
+            "lr": 0.0002,
+            "l2_reg": 1e-06,
             "batch_size": 512,
-            "lr": 0.0005,
-            "l2_reg": 1e-6,  # L2 regularization
-            "w_reg": 1.0,  # Task weight
+            "w_reg": 1.0,
         },
         "hs": {
-            "alpha": 0.2,
-            "batch_size": 512,
-            "lr": 0.0005,
-            "l2_reg": 1e-5,  # L2 regularization
-            "w_reg": 1.0,  # Task weight
+            "alpha": 0.5,
+            "lr": 0.000303375,
+            "l2_reg": 7.555e-07,
+            "batch_size": 1024,
+            "w_reg": 0.2,
         },
         "ufb": {
             "alpha": 0.5,
             "batch_size": 512,
             "lr": 0.0005,
-            "l2_reg": 1e-5,  # L2 regularization
-            "w_reg": 0.2,  # Task weight
+            "l2_reg": 1e-5,
+            "w_reg": 0.2,
         }
     }
     ds_defaults = dataset_defaults.get(pre_args.data_name, {})

@@ -1,0 +1,128 @@
+coat:
+  bpr:
+    dim: 260.0
+    lam: 3.910002376153659e-06
+    # sample_times: 1
+  relmf:
+    clip: 0.002808891158289788
+    dim: 300.0
+    lam: 1.3828770780317699e-06
+    dual_unbias: False
+  relmf_du:
+    clip: 0.002808891158289788
+    dim: 300.0
+    lam: 1.3828770780317699e-06
+    dual_unbias: True
+  ubpr_nclip:
+    beta: 100000000.0
+    dim: 300.0
+    lam: 3.455516424748458e-05
+  ubpr:
+    beta: 0.007984890088077323
+    dim: 300.0
+    lam: 3.455516424748458e-05
+  wmf:
+    dim: 140.0
+    lam: 5.177711406094569e-07
+    weight: 0.886018545949848
+    dual_unbias: False
+  upl_bpr:
+    pair_weight: 0
+    beta: 0.0
+    dim: 300.0
+    lam: 3.455516424748458e-05
+yahoo:
+  bpr:
+    dim: 140.0
+    lam: 7.011439614047492e-06
+  relmf:
+    clip: 0.01639041939021016
+    dim: 160.0
+    lam: 1.0586149071898904e-07
+    dual_unbias: False
+  relmf_du:
+    clip: 0.01639041939021016
+    dim: 160.0
+    lam: 1.0586149071898904e-07
+    dual_unbias: True
+  ubpr_nclip:
+    beta: 100000000.0
+    dim: 100.0
+    lam: 3.841660685128071e-05
+  ubpr:
+    beta: 0.0023407751833139324
+    dim: 100.0
+    lam: 3.841660685128071e-05
+  upl_bpr:
+    pair_weight: 0
+    beta: 0.00
+    dim: 100.0
+    lam: 3.841660685128071e-05
+  wmf:
+    dim: 120.0
+    lam: 1.0116917938768408e-07
+    weight: 0.9682271409862864
+    dual_unbias: False
+kuai:
+  bpr:
+    dim: 400.0
+    lam: 0.00001  # 1e-5
+  relmf:
+    clip: 0.015
+    dim: 350.0
+    lam: 0.000002  # 2e-6
+    dual_unbias: False
+  relmf_du:
+    clip: 0.015
+    dim: 350.0
+    lam: 0.000002  # 2e-6
+    dual_unbias: True
+  ubpr_nclip:
+    beta: 50000000.0
+    dim: 350.0
+    lam: 0.000025  # 2.5e-5
+  ubpr:
+    beta: 0.005
+    dim: 350.0
+    lam: 0.000025  # 2.5e-5
+  wmf:
+    dim: 180.0
+    lam: 0.000001  # 1e-6
+    weight: 0.92
+    dual_unbias: False
+  upl_bpr:
+    pair_weight: 0
+    beta: 0.0
+    dim: 350.0
+    lam: 0.000025  # 2.5e-5
+
+coat3:
+  bpr:
+    dim: 140
+    lam: 1.9301726019412097e-06
+coat1:
+  bpr:
+    dim: 256
+    lam: 0.0001
+    eta: 0.001
+
+  # Ours:
+  #   lambda1: 5.0e-06
+  #   lambda2: 0.0001
+  #   weight_decay1: 0.005
+  #   weight_decay2: 0.01
+  #   embedding_dim: 256
+  #   num_hidden_layers: 1
+  #   hidden_layer_0: 32
+  #   num_prediction_layers: 1
+  #   prediction_layer_0: 128
+yahoo1:
+  bpr:
+    dim: 256
+    lam: 5.0e-7
+    eta: 0.001
+kuai1:
+  bpr:
+    dim: 128
+    lam: 0.0001
+    eta: 0.001

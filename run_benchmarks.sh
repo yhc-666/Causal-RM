@@ -44,6 +44,7 @@ TASKS=(
     "models_debias:benchmark_robust_dividemix.py"
     # models_debias_pu (debias + PU)
     "models_debias_pu:benchmark_counterif.py"
+    "models_debias_pu:benchmark_recrec.py"
     # models_pu (10)
     "models_pu:benchmark_bpr.py"
     "models_pu:benchmark_ubpr.py"

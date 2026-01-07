@@ -316,10 +316,15 @@ def parse_arguments():
     pre_parser.add_argument("--data_name", type=str, default="hs")
     pre_args, _ = pre_parser.parse_known_args()
 
+    pre_parser.add_argument("--unbiased", type=str2bool, default=False)
+    pre_args, _ = pre_parser.parse_known_args()
+
+    output_subdir = "counterif_unbiased" if pre_args.unbiased else "counterif"
     base_defaults = {
         "desc": "foo",
         "is_training": True,
-        "output_dir": f"./results/cache/counterif/{pre_args.data_name}",
+        "output_dir": f"./results/cache/{output_subdir}/{pre_args.data_name}",
+        "unbiased": pre_args.unbiased,
         "data_root": "./embeddings/biased_pu",
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "counterif",
@@ -392,6 +397,7 @@ def parse_arguments():
     parser.add_argument("--monitor_on", type=str)
     parser.add_argument("--binary", type=str2bool)
     parser.add_argument("--use_tqdm", type=str2bool)
+    parser.add_argument("--unbiased", type=str2bool, help="Use unbiased PU data (random sampling)")
 
     parser.set_defaults(**merged_defaults)
     return parser.parse_args()
@@ -523,6 +529,13 @@ def train(
     best_loss = float("inf")
     patience_counter = 0
 
+    seed = int(getattr(args, "seed", 0))
+    gen_point = torch.Generator().manual_seed(seed + 100)
+    gen_pair_dp_he = torch.Generator().manual_seed(seed + 200)
+    gen_pair_un_he = torch.Generator().manual_seed(seed + 201)
+    gen_pair_hu_un = torch.Generator().manual_seed(seed + 202)
+    gen_full = torch.Generator().manual_seed(seed + 300)
+
     # Pointwise dataset: DP/HE only
     train_group_t = torch.from_numpy(train_group).long()
     idx_point = torch.where((train_group_t == GROUPS.DP) | (train_group_t == GROUPS.HE))[0]
@@ -531,22 +544,33 @@ def train(
         TensorDataset(idx_point, y_point),
         batch_size=max(1, int(args.batch_size_point)),
         shuffle=True,
+        generator=gen_point,
     )
 
     # Pairwise datasets (indices only)
-    def _pair_loader(pairs: np.ndarray):
+    def _pair_loader(pairs: np.ndarray, *, generator: torch.Generator):
         if pairs.size == 0:
             return None
         t = torch.from_numpy(pairs).long()
-        return DataLoader(TensorDataset(t[:, 0], t[:, 1]), batch_size=max(1, int(args.batch_size_pair)), shuffle=True)
+        return DataLoader(
+            TensorDataset(t[:, 0], t[:, 1]),
+            batch_size=max(1, int(args.batch_size_pair)),
+            shuffle=True,
+            generator=generator,
+        )
 
-    pair_loader_dp_he = _pair_loader(pairs_train_dp_he)
-    pair_loader_un_he = _pair_loader(pairs_train_un_he)
-    pair_loader_hu_un = _pair_loader(pairs_train_hu_un)
+    pair_loader_dp_he = _pair_loader(pairs_train_dp_he, generator=gen_pair_dp_he)
+    pair_loader_un_he = _pair_loader(pairs_train_un_he, generator=gen_pair_un_he)
+    pair_loader_hu_un = _pair_loader(pairs_train_hu_un, generator=gen_pair_hu_un)
 
     # IPM batches sampled from full train set (indices only)
     full_idx = torch.arange(int(X_train.shape[0]), dtype=torch.long)
-    full_loader = DataLoader(TensorDataset(full_idx), batch_size=max(1, int(args.batch_size_ipm)), shuffle=True)
+    full_loader = DataLoader(
+        TensorDataset(full_idx),
+        batch_size=max(1, int(args.batch_size_ipm)),
+        shuffle=True,
+        generator=gen_full,
+    )
 
     bce = nn.BCEWithLogitsLoss()
 
@@ -583,50 +607,52 @@ def train(
 
             # Pairwise losses (three terms)
             loss_pair = X_train.new_tensor(0.0)
-            for it_pair in (it_pair_dp_he, it_pair_un_he, it_pair_hu_un):
-                batch = next(it_pair)
-                if batch is None:
-                    continue
-                pos_idx, neg_idx = batch
-                pos_idx = pos_idx.to(device=device)
-                neg_idx = neg_idx.to(device=device)
-                logits_pos = model(X_train[pos_idx]).squeeze()
-                logits_neg = model(X_train[neg_idx]).squeeze()
-                loss_pair = loss_pair + _bpr_pair_loss(logits_pos, logits_neg)
+            if float(args.lambda_pair) > 0.0:
+                for it_pair in (it_pair_dp_he, it_pair_un_he, it_pair_hu_un):
+                    batch = next(it_pair)
+                    if batch is None:
+                        continue
+                    pos_idx, neg_idx = batch
+                    pos_idx = pos_idx.to(device=device)
+                    neg_idx = neg_idx.to(device=device)
+                    logits_pos = model(X_train[pos_idx]).squeeze()
+                    logits_neg = model(X_train[neg_idx]).squeeze()
+                    loss_pair = loss_pair + _bpr_pair_loss(logits_pos, logits_neg)
 
             # IPM/Wasserstein on a random full batch
             loss_ipm = X_train.new_tensor(0.0)
-            batch_full = next(it_full)
-            if batch_full is not None:
-                (idx_full,) = batch_full
-                idx_full = idx_full.to(device=device)
-                _, rep_full = model(X_train[idx_full], return_rep=True)
+            if float(args.lambda_ipm) > 0.0:
+                batch_full = next(it_full)
+                if batch_full is not None:
+                    (idx_full,) = batch_full
+                    idx_full = idx_full.to(device=device)
+                    _, rep_full = model(X_train[idx_full], return_rep=True)
 
-                r_b = train_r_t[idx_full]
-                loss_ipm = loss_ipm + _wasserstein_ipm(
-                    rep_full,
-                    r_b,
-                    p=float(args.ipm_p),
-                    lam=float(args.ipm_lam),
-                    its=int(args.ipm_its),
-                    sq=False,
-                    backpropT=False,
-                )
-
-                r1_mask = r_b == 1
-                if int(r1_mask.sum()) > 0:
-                    rep_r1 = rep_full[r1_mask]
-                    o_r1 = train_o_t[idx_full][r1_mask]
-                    t_o = (o_r1 == 1).long()
+                    r_b = train_r_t[idx_full]
                     loss_ipm = loss_ipm + _wasserstein_ipm(
-                        rep_r1,
-                        t_o,
+                        rep_full,
+                        r_b,
                         p=float(args.ipm_p),
                         lam=float(args.ipm_lam),
                         its=int(args.ipm_its),
                         sq=False,
                         backpropT=False,
                     )
+
+                    r1_mask = r_b == 1
+                    if int(r1_mask.sum()) > 0:
+                        rep_r1 = rep_full[r1_mask]
+                        o_r1 = train_o_t[idx_full][r1_mask]
+                        t_o = (o_r1 == 1).long()
+                        loss_ipm = loss_ipm + _wasserstein_ipm(
+                            rep_r1,
+                            t_o,
+                            p=float(args.ipm_p),
+                            lam=float(args.ipm_lam),
+                            its=int(args.ipm_its),
+                            sq=False,
+                            backpropT=False,
+                        )
 
             loss = (
                 float(args.lambda_point) * loss_point
@@ -679,7 +705,10 @@ def main():
     if not args.binary:
         raise ValueError("Counter-IF benchmark currently supports --binary True only.")
 
-    embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
+    if args.unbiased:
+        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_pu_unbiased.safetensors"
+    else:
+        embedding_file = f"{args.data_root}/{args.model_name}_{args.data_name}_{args.alpha}_pu.safetensors"
     data = load_file(embedding_file)
 
     def _get(key: str, dtype: torch.dtype):
@@ -897,7 +926,32 @@ def main():
         "Group val n_hu": int(np.sum(val_group == GROUPS.HU)),
         "Group val n_un": int(np.sum(val_group == GROUPS.UN)),
     }
+
+    # Oracle eval metrics (clean labels before PU masking). Useful for tuning without peeking test.
+    y_val_true_cpu = y_val_binary_true.detach().cpu().numpy()
+    metrics.update(
+        {
+            "R2 on eval (oracle)": r2_score(y_val_true_cpu, y_val_pred),
+            "MAE on eval (oracle)": mean_absolute_error(y_val_true_cpu, y_val_pred),
+            "RMSE on eval (oracle)": math.sqrt(mean_squared_error(y_val_true_cpu, y_val_pred)),
+            "AUROC on eval (oracle)": roc_auc_score(y_val_true_cpu, y_val_pred),
+            "Pearson on eval (oracle)": pearsonr(y_val_true_cpu, y_val_pred)[0],
+            "NLL on eval (oracle)": compute_nll(y_val_true_cpu, y_val_pred),
+            "NDCG on eval (oracle)": compute_ndcg_binary(y_val_true_cpu, y_val_pred),
+        }
+    )
+
+    # Val group purity under oracle label (sanity-check CounterIF group assignment).
+    for g, name in ((GROUPS.DP, "DP"), (GROUPS.HE, "HE"), (GROUPS.HU, "HU"), (GROUPS.UN, "UN")):
+        mask = val_group == int(g)
+        n = int(np.sum(mask))
+        if n == 0:
+            metrics[f"Group val {name} pos_true_rate"] = float("nan")
+        else:
+            metrics[f"Group val {name} pos_true_rate"] = float(np.mean(y_val_true_cpu[mask]))
+
     add_tuned_recall_metrics(metrics, y_val_cpu, y_val_pred, y_test_cpu, y_test_pred)
+    add_tuned_recall_metrics(metrics, y_val_true_cpu, y_val_pred, y_test_cpu, y_test_pred, prefix="Oracle ")
     metrics = refine_dict(metrics)
     print("\n--- Final Performance ---")
     for k, v in metrics.items():

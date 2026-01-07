@@ -89,14 +89,18 @@ def parse_arguments():
 
     dataset_defaults = {
         "saferlhf": {
-            "alpha": 0.2,
-            "batch_size": 512,
+            "alpha": 0.5,
             "lr": 0.0005,
+            "l2_reg": 1e-06,
+            "batch_size": 512,
+            "clip_min": 0.1,
         },
         "hs": {
-            "alpha": 0.2,
+            "alpha": 0.5,
+            "lr": 0.00101611,
+            "l2_reg": 5.695e-07,
             "batch_size": 512,
-            "lr": 0.0005,
+            "clip_min": 0.2,
         },
         "ufb": {
         }
