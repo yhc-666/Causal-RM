@@ -1,0 +1,144 @@
+#!/bin/bash
+# Grid search script for benchmark_counterif.py (CPU version)
+# Usage: bash scripts/grid_search/counterif.sh --alpha 0.5 --dataset hs
+
+set -e
+
+# ============== Parse command line arguments ==============
+ALPHA=0.5
+DATASET=hs
+MAX_JOBS=20
+RERUN=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --alpha)
+            ALPHA="$2"
+            shift 2
+            ;;
+        --dataset)
+            DATASET="$2"
+            shift 2
+            ;;
+        --max_jobs)
+            MAX_JOBS="$2"
+            shift 2
+            ;;
+        --rerun)
+            RERUN=true
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--alpha ALPHA] [--dataset DATASET] [--max_jobs N] [--rerun]"
+            exit 1
+            ;;
+    esac
+done
+
+echo "============================================"
+echo "Grid Search for CounterIF Benchmark"
+echo "============================================"
+echo "Dataset: $DATASET"
+echo "Alpha: $ALPHA"
+echo "Max parallel jobs: $MAX_JOBS"
+echo "Rerun existing: $RERUN"
+echo "============================================"
+
+# ============== Job control ==============
+check_jobs() {
+    while true; do
+        jobs_count=$(jobs -p | wc -l)
+        if [ "$jobs_count" -lt "$MAX_JOBS" ]; then
+            break
+        fi
+        sleep 1
+    done
+}
+
+# ============== Paths ==============
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT"
+
+DATA_ROOT="./embeddings/biased_pu"
+EXP_NAME="grid_search/counterif"
+ROOT="./results/$EXP_NAME"
+mkdir -p "$ROOT"
+
+# ============== Fixed parameters ==============
+desc=counterif
+use_tqdm=false
+_num_epochs=200
+_patience=20
+_monitor_on=train
+_binary=true
+_hidden_dim="256,64"
+_seed=42
+
+# ============== Hyperparameter search space (single-element lists for now) ==============
+_lr_list=(0.0005)
+_batch_size_list=(512)
+_l2_reg_list=(1e-7)
+
+# ============== Grid search ==============
+job_number=0
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]}))
+echo "Total hyperparameter combinations: $total_combinations"
+echo ""
+
+for _lr in "${_lr_list[@]}"; do
+for _batch_size in "${_batch_size_list[@]}"; do
+for _l2_reg in "${_l2_reg_list[@]}"; do
+    check_jobs
+    ((job_number++))
+
+    # Build output directory name from parameters
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}"
+    OUTPUT_DIR="$ROOT/$EXP_DIR"
+    mkdir -p "$OUTPUT_DIR"
+
+    # Skip if already completed (unless rerun is set)
+    if [ "$RERUN" = false ] && [ -f "$OUTPUT_DIR/performance.yaml" ]; then
+        echo "[$job_number/$total_combinations] Skipping (exists): $EXP_DIR"
+        continue
+    fi
+
+    echo "[$job_number/$total_combinations] Running: $EXP_DIR"
+
+    # Run on CPU (no CUDA_VISIBLE_DEVICES)
+    CUDA_VISIBLE_DEVICES="" python -u models_debias_pu/benchmark_counterif.py \
+        --desc "$desc" \
+        --data_name "$DATASET" \
+        --alpha "$ALPHA" \
+        --lr "$_lr" \
+        --batch_size_point "$_batch_size" \
+        --batch_size_pair "$_batch_size" \
+        --batch_size_ipm "$_batch_size" \
+        --hidden_dim "$_hidden_dim" \
+        --l2_reg "$_l2_reg" \
+        --num_epochs "$_num_epochs" \
+        --patience "$_patience" \
+        --seed "$_seed" \
+        --monitor_on "$_monitor_on" \
+        --binary "$_binary" \
+        --data_root "$DATA_ROOT" \
+        --output_dir "$OUTPUT_DIR" \
+        --rerun "$RERUN" \
+        --is_training true \
+        --use_tqdm "$use_tqdm" \
+        > "$OUTPUT_DIR/stdout.log" 2>&1 &
+
+done
+done
+done
+
+echo ""
+echo "Waiting for all jobs to complete..."
+wait
+
+echo ""
+echo "============================================"
+echo "Grid search completed!"
+echo "Results saved to: $ROOT"
+echo "============================================"

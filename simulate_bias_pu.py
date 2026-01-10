@@ -264,6 +264,7 @@ parser.add_argument("--data_name", type=str, default="saferlhf")
 parser.add_argument("--data_root", type=str, default="../embeddings/normal")
 parser.add_argument("--output_dir", type=str, default="../embeddings/biased_pu")
 parser.add_argument("--alpha", type=float, default=0.5, help="Alpha parameter for propensity calculation")
+parser.add_argument("--target_obs_rate", type=float, default=0.2, help="Target observation rate")
 # NOTE: Label noise parameters removed - now using PU Learning instead
 # parser.add_argument("--r10", type=float, default=0.1, help="Noise rate for positive to negative")
 # parser.add_argument("--r01", type=float, default=0.1, help="Noise rate for negative to positive")
@@ -282,7 +283,7 @@ if user_id is not None:
 embeddings_filtered = embeddings[~np.isnan(labels)]
 target_labels_filtered = labels[~np.isnan(labels)]
 user_id_filtered = user_id[~np.isnan(labels)] if user_id is not None else None
-propensity_filtered = calculate_propensity(target_labels_filtered, args.alpha)
+propensity_filtered = calculate_propensity(target_labels_filtered, args.alpha, args.target_obs_rate)
 print(f"Original data size: {embeddings.shape[0]}")
 print(f"Data size after filtering NaN values: {embeddings_filtered.shape[0]}")
 print(f"Propensity range: [{propensity_filtered.min():.6f}, {propensity_filtered.max():.6f}]")

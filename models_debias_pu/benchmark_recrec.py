@@ -26,34 +26,66 @@ from tools.utils import (
 )
 
 
-def calculate_propensity(labels, alpha, target_observation_rate=0.2):
+def _pscore_popularity_from_ids(
+    ids: np.ndarray,
+    y_binary: np.ndarray,
+    *,
+    eps: float = 1e-6,
+) -> np.ndarray:
     """
-    Copy from `simulate_bias_pu.py` (do not modify that file).
+    ReCRec pscore (propensity prior) consistent with the original preprocessor:
 
-    Calculate propensity scores for each rating.
+      pscore[i] = sqrt(freq_pos[i] / max_j freq_pos[j])
 
-    Args:
-        labels: Array of ratings
-        alpha: Alpha parameter for propensity calculation
+    where freq_pos is the count of positive (click==1) interactions.
 
-    Returns:
-        propensity: Array of propensity scores
+    In this repo we don't have explicit item_id; we use `user_id` as the identifier
+    to compute a popularity-style prior (the only shared ID available across samples).
     """
-    propensity = np.ones_like(labels)
-    labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
+    ids = np.asarray(ids).reshape(-1)
+    y_binary = np.asarray(y_binary).reshape(-1)
+    if ids.shape[0] != y_binary.shape[0]:
+        raise ValueError(f"ids and y_binary must have same length, got {ids.shape} vs {y_binary.shape}")
 
-    mask_lt_4 = labels < labels.max()
-    # reward越低，propensity score越小
-    propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
+    # Map arbitrary ids -> contiguous indices for safe bincount.
+    _, inv = np.unique(ids.astype(np.int64, copy=False), return_inverse=True)
+    inv = inv.astype(np.int64, copy=False)
+    pos_mask = (y_binary.astype(np.int64, copy=False) == 1)
+    pos_counts = np.bincount(inv[pos_mask], minlength=int(inv.max()) + 1).astype(np.float64)
 
-    mask_ge_4 = labels >= labels.max()
-    propensity[mask_ge_4] = 1.0
+    max_count = float(pos_counts.max()) if pos_counts.size > 0 else 0.0
+    if not np.isfinite(max_count) or max_count <= 0.0:
+        # No positives => fallback to a constant prior.
+        return np.full((ids.shape[0],), 1.0, dtype=np.float32)
 
-    expected_observations = target_observation_rate * len(labels)
-    k = expected_observations / np.sum(propensity)
-    propensity = propensity * k
+    scores = np.sqrt(pos_counts / max_count)
+    pscore = scores[inv]
+    pscore = np.clip(pscore, eps, 1.0).astype(np.float32, copy=False)
+    return pscore
 
-    return propensity
+
+def _exposure_from_y_with_random_unlabeled(
+    y_binary: torch.Tensor, *, seed: int, n_random_unlabeled_as_exposed: int = 100
+) -> torch.Tensor:
+    """
+    Strictly follow the original `old/unbiased-pairwise-rec-master/src/trainer_recrec.py` heuristic:
+
+      exposure = y.copy()
+      randomly flip 100 unlabeled (y==0) instances to exposure=1
+
+    This provides a tiny "exposed-but-unclicked" set for ReCRec-D training.
+    """
+    y = y_binary.detach().to("cpu").view(-1).numpy().astype(np.int64, copy=True)
+    unlabeled_idx = np.where(y == 0)[0]
+    if unlabeled_idx.size == 0:
+        expo = y
+    else:
+        rng = np.random.default_rng(int(seed))
+        k = int(min(int(n_random_unlabeled_as_exposed), int(unlabeled_idx.size)))
+        pick = rng.choice(unlabeled_idx, size=k, replace=False)
+        expo = y
+        expo[pick] = 1
+    return torch.from_numpy(expo.astype(np.float32, copy=False)).to(y_binary.device)
 
 
 class MLP(nn.Module):
@@ -223,12 +255,11 @@ def parse_arguments():
         "seed": 42,
         "l2_reg": 1e-6,
         "lamp": 1.0,  # weight for mu~propensity regularizer (ReCRec-F)
-        "target_observation_rate": 0.2,  # for calculate_propensity
-        "pscore_source": "computed",
-        "pscore_clip_min": 0.0,
+        "pscore_source": "popularity",
+        "pscore_clip_min": 1e-6,
         "pscore_clip_max": 1.0,
         "eps": 1e-6,
-        "use_exposure": True,  # use oracle mask_* as exposure indicator (ReCRec-D style)
+        "use_exposure": (variant == "D"),
         "use_user_id": True,
         "user_bucket_size": 200000,
         "user_embed_dim": 32,
@@ -405,8 +436,7 @@ def parse_arguments():
     parser.add_argument("--seed", type=int)
     parser.add_argument("--l2_reg", type=float)
     parser.add_argument("--lamp", type=float)
-    parser.add_argument("--target_observation_rate", type=float)
-    parser.add_argument("--pscore_source", type=str, choices=["computed", "data"])
+    parser.add_argument("--pscore_source", type=str, choices=["popularity", "data"])
     parser.add_argument("--pscore_clip_min", type=float)
     parser.add_argument("--pscore_clip_max", type=float)
     parser.add_argument("--eps", type=float)
@@ -499,6 +529,30 @@ def train(
     if not args.is_training:
         return
 
+    # ReCRec original training samples each iteration as:
+    #   - all positives
+    #   - + 4x unlabeled sampled with replacement
+    # See: old/unbiased-pairwise-rec-master/src/trainer_recrec.py
+    #
+    # We implement the same sampling policy here by reusing the underlying TensorDataset
+    # and constructing an epoch-specific sampler (to avoid materializing large tensors).
+    base_dataset = train_loader.dataset
+    if not hasattr(base_dataset, "tensors") or len(getattr(base_dataset, "tensors")) < 2:
+        raise ValueError("Expected train_loader.dataset to be a TensorDataset with (X, y, ...).")
+
+    y_all = base_dataset.tensors[1].detach().to("cpu").view(-1).numpy()
+    pos_idx = np.where(y_all == 1)[0].astype(np.int64, copy=False)
+    unl_idx = np.where(y_all == 0)[0].astype(np.int64, copy=False)
+    n_pos = int(pos_idx.shape[0])
+    n_unl = int(unl_idx.shape[0])
+
+    if n_pos == 0:
+        print("[WARN] ReCRec sampling: found 0 positive samples; falling back to standard minibatch training.")
+    if n_unl == 0:
+        print("[WARN] ReCRec sampling: found 0 unlabeled samples; training on positives only.")
+
+    rng = np.random.default_rng(int(args.seed))
+
     best_loss = float("inf")
     patience_counter = 0
 
@@ -506,7 +560,22 @@ def train(
         model.train()
         epoch_loss_label = 0.0
 
-        bar = tqdm(train_loader, desc=f"[ReCRec-{args.variant}] Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else train_loader
+        if n_pos > 0:
+            if n_unl > 0:
+                unl_sample = rng.choice(unl_idx, size=n_pos * 4, replace=True)
+                epoch_indices = np.concatenate([pos_idx, unl_sample], axis=0)
+            else:
+                epoch_indices = pos_idx
+        else:
+            epoch_indices = np.arange(int(len(base_dataset)), dtype=np.int64)
+
+        # Deterministic per-epoch shuffling of the sampled indices (for minibatch mixing).
+        g = torch.Generator()
+        g.manual_seed(int(args.seed) + int(epoch))
+        epoch_sampler = torch.utils.data.SubsetRandomSampler(epoch_indices.tolist(), generator=g)
+        epoch_loader = DataLoader(base_dataset, batch_size=args.batch_size, sampler=epoch_sampler)
+
+        bar = tqdm(epoch_loader, desc=f"[ReCRec-{args.variant}] Epoch {epoch + 1}/{num_epochs}", leave=False) if args.use_tqdm else epoch_loader
         for batch in bar:
             if args.use_exposure and args.use_user_id:
                 batch_X, batch_y, batch_pscore, batch_exposure, batch_user = batch
@@ -573,7 +642,8 @@ def train(
 
                 ce_mu2 = _bce_prob(mu2, p2, eps=args.eps)
                 pscore_loss2 = F.mse_loss(mu2, batch_pscore.view(-1, 1))
-                loss_mu = ce_mu2 + args.lamp * pscore_loss2
+                # Original ReCRec-D uses an unweighted pscore MSE (no lamp hyperparam).
+                loss_mu = ce_mu2 + pscore_loss2
 
                 opt_mu.zero_grad(set_to_none=True)
                 loss_mu.backward()
@@ -602,10 +672,10 @@ def train(
             )
             if epoch % 4 == 0:
                 print(
-                    f"Epoch {epoch + 1}/{num_epochs}, Train label loss: {epoch_loss_label/len(train_loader):.5f}, Val loss: {val_loss:.5f}"
+                    f"Epoch {epoch + 1}/{num_epochs}, Train label loss: {epoch_loss_label/len(epoch_loader):.5f}, Val loss: {val_loss:.5f}"
                 )
 
-        monitor_loss = (epoch_loss_label / len(train_loader)) if args.monitor_on == "train" else val_loss
+        monitor_loss = (epoch_loss_label / len(epoch_loader)) if args.monitor_on == "train" else val_loss
         if monitor_loss is None:
             continue
 
@@ -719,18 +789,29 @@ def main():
     print(f"Validating on {X_val.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
 
-    # Mask-blind propensity baseline: compute from noisy PU labels (0/1) on the FULL train split,
-    # then slice if subsampling is requested.
+    # ReCRec pscore (propensity prior) for the exposure model μ.
     if args.pscore_source == "data":
+        # Use pscore stored in the dataset (e.g., simulator-produced propensity).
         pscore_train_full = propensity_train_full.float()
     else:
-        propensity_train_full_np = calculate_propensity(
-            y_train_full.detach().cpu().numpy(), alpha=args.alpha, target_observation_rate=args.target_observation_rate
+        if not user_id_available:
+            raise ValueError("--pscore_source popularity requires user_id_* in the dataset.")
+        # ReCRec original: pscore is a popularity prior (item popularity). Here we compute it from user_id frequency.
+        pscore_train_full_np = _pscore_popularity_from_ids(
+            user_id_train_full.detach().cpu().numpy(),
+            y_train_full.detach().cpu().numpy(),
+            eps=float(args.pscore_clip_min),
         )
-        pscore_train_full_np = np.clip(propensity_train_full_np, args.pscore_clip_min, args.pscore_clip_max).astype(np.float32)
         pscore_train_full = torch.from_numpy(pscore_train_full_np).to(device)
     pscore_train_full = pscore_train_full.clamp(min=args.pscore_clip_min, max=args.pscore_clip_max)
+
+    # ReCRec-D uses an "exposure" signal in the E-step update. The original implementation does NOT have
+    # oracle exposures and instead uses a small heuristic (randomly mark 100 unlabeled as exposed).
     exposure_train_full = mask_train.float()
+    if args.variant.upper() == "D" and args.use_exposure:
+        exposure_train_full = _exposure_from_y_with_random_unlabeled(
+            y_train_full, seed=int(args.seed), n_random_unlabeled_as_exposed=100
+        )
 
     # Optional subsampling for tuning speed (deterministic).
     rng = np.random.default_rng(args.seed)
