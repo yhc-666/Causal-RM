@@ -1,6 +1,6 @@
 #!/bin/bash
 # Grid search script for benchmark_naive.py (CPU version)
-# Usage: bash scripts/grid_search/naive.sh --alpha 0.5 --dataset hs
+# Usage: bash scripts/grid_search/naive.sh --alpha 0.5 --dataset ufb
 
 set -e
 
@@ -78,16 +78,16 @@ _seed=42
 
 # ============== Hyperparameter search space ==============
 # lr: 0.0001 - 0.01
-_lr_list=(0.0001 0.0002 0.0005 0.001 0.002 0.005 0.01)
+_lr_list=(0.0002)
 
 # batch_size
-_batch_size_list=(256 512 1024)
+_batch_size_list=(512)
 
 # l2_reg
-_l2_reg_list=(1e-7 1e-6 1e-5 1e-4)
+_l2_reg_list=(1e-7)
 
 # w_reg (task weight)
-_w_reg_list=(0.01 0.02 0.05 0.1 0.2 0.5 1.0 2.0 5.0)
+_w_reg_list=(0.0100)
 
 # ============== Grid search ==============
 job_number=0

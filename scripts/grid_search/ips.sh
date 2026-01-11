@@ -75,23 +75,25 @@ _monitor_on=train
 _binary=true
 _hidden_dim="256,64"
 _seed=42
-_clip_min=0.1
 
-# ============== Hyperparameter search space (single-element lists for now) ==============
-_lr_list=(0.0001 0.0005 0.001 0.005 0.01)
+# ============== Hyperparameter search space ==============
+_lr_list=(0.0001 0.0002 0.0005 0.001 0.002 0.005 0.01)
 
 # batch_size
-_batch_size_list=(256 512)
+_batch_size_list=(256 512 1024)
 
 # l2_reg
-_l2_reg_list=(1e-7 1e-6 1e-5 1e-4)
+_l2_reg_list=(1e-8 1e-7 1e-6 1e-5 1e-4)
 
 # w_reg (task weight)
-_w_reg_list=(0.01 0.05 0.1 0.5 1.0)
+_w_reg_list=(0.01 0.05 0.1 0.2 0.5 1.0 2.0)
+
+# clip_min
+_clip_min_list=(0.05 0.1 0.2)
 
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]} * ${#_clip_min_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
@@ -99,11 +101,12 @@ for _lr in "${_lr_list[@]}"; do
 for _batch_size in "${_batch_size_list[@]}"; do
 for _l2_reg in "${_l2_reg_list[@]}"; do
 for _w_reg in "${_w_reg_list[@]}"; do
+for _clip_min in "${_clip_min_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}_clip${_clip_min}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -138,6 +141,7 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --use_tqdm "$use_tqdm" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
+done
 done
 done
 done

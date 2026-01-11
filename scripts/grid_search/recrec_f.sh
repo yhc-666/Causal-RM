@@ -103,22 +103,29 @@ _pscore_clip_max=1.0
 _pred_target="gamma"
 _calibration="isotonic"
 _calibration_fit_on="val_true"
+_eps=1e-6
+_use_exposure=false
+_use_user_id=true
+_user_bucket_size=200000
+_user_embed_dim=32
+_subsample_train=0
+_subsample_val=0
 
 # ============== Hyperparameter search space ==============
 # lr
-_lr_list=(0.0001 0.0002 0.0005 0.001 0.002 0.005 0.01)
+_lr_list=(0.00001 0.00003 0.0001 0.0003 0.001 0.01)
 
 # batch_size
-_batch_size_list=(256 512 1024 2048)
+_batch_size_list=(256 512 1024)
 
 # l2_reg
-_l2_reg_list=(1e-8 1e-7 1e-6 1e-5 1e-4 1e-3)
+_l2_reg_list=(1e-8 1e-7 1e-6 1e-5)
 
 # lamp (ReCRec-F: mu~pscore regularization weight)
-_lamp_list=(0.0 0.001 0.01 0.03 0.1 0.3 1.0)
+_lamp_list=(0.0 0.01 0.03 0.1 0.3)
 
 # post-calibration sharpening (k>=1)
-_sharpen_k_list=(1.0 1.1 1.2 1.5 2.0 2.5)
+_sharpen_k_list=(1.0 1.1 1.3 1.5 2.5 4)
 
 # ============== Grid search ==============
 job_number=0
@@ -169,6 +176,13 @@ for _k in "${_sharpen_k_list[@]}"; do
         --pred_target "$_pred_target" \
         --calibration "$_calibration" \
         --calibration_fit_on "$_calibration_fit_on" \
+        --eps "$_eps" \
+        --use_exposure "$_use_exposure" \
+        --use_user_id "$_use_user_id" \
+        --user_bucket_size "$_user_bucket_size" \
+        --user_embed_dim "$_user_embed_dim" \
+        --subsample_train "$_subsample_train" \
+        --subsample_val "$_subsample_val" \
         --pscore_source "$_pscore_source" \
         --pscore_clip_min "$_pscore_clip_min" \
         --pscore_clip_max "$_pscore_clip_max" \
@@ -194,4 +208,3 @@ echo "============================================"
 echo "Grid search completed!"
 echo "Results saved to: $ROOT"
 echo "============================================"
-

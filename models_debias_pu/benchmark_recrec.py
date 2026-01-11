@@ -229,8 +229,8 @@ def _apply_isotonic(iso: IsotonicRegression, scores: np.ndarray) -> np.ndarray:
 def parse_arguments():
     pre_parser = ArgumentParser(add_help=False)
     pre_parser.add_argument("--data_name", type=str, default="hs")
-    pre_parser.add_argument("--variant", type=str, default="I")
-    pre_parser.add_argument("--alpha", type=float, default=0.2)
+    pre_parser.add_argument("--variant", type=str, default="F")
+    pre_parser.add_argument("--alpha", type=float, default=0.5)
     pre_args, _ = pre_parser.parse_known_args()
 
     variant = str(pre_args.variant).upper()
@@ -245,7 +245,7 @@ def parse_arguments():
         "estimator_name": output_subdir,
         "data_name": pre_args.data_name,
         "variant": variant,
-        "alpha": 0.2,
+        "alpha": 0.5,
         "lr": 5e-4,
         "num_epochs": 200,
         "batch_size": 1024,
@@ -268,8 +268,8 @@ def parse_arguments():
         "calibration": "isotonic",  # none | isotonic
         "calibration_fit_on": "val_true",  # val_true | val_noisy
         "calibration_sharpen_k": 1.0,  # k>=1 makes probs more confident
-        "rerun": False,
-        "monitor_on": "val",
+        "rerun": True,
+        "monitor_on": "train",
         "binary": True,
         "use_tqdm": True,
     }
@@ -283,12 +283,12 @@ def parse_arguments():
         "F": {
             # Tuned (Pareto): test MAE/RMSE/R2
             "hs": {
-                "0.2": {
+                "0.5": {
                     "alpha": 0.2,
-                    "lr": 5.943735219089652e-05,
+                    "lr": 5e-05,
                     "batch_size": 1024,
                     "hidden_dim": "512,128",
-                    "l2_reg": 3.0432602288107086e-07,
+                    "l2_reg": 3.e-07,
                     "lamp": 0.02800949731636017,
                     "num_epochs": 120,
                     "patience": 20,

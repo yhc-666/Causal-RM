@@ -6,7 +6,7 @@ set -e
 
 # ============== Parse command line arguments ==============
 ALPHA=0.5
-DATASET=hs
+DATASET=saferlhf
 MAX_JOBS=20
 RERUN=false
 
@@ -67,7 +67,7 @@ ROOT="./results/$EXP_NAME"
 mkdir -p "$ROOT"
 
 # ============== Fixed parameters ==============
-desc=dr
+desc=ufb
 use_tqdm=false
 _num_epochs=200
 _patience=20
@@ -75,29 +75,34 @@ _monitor_on=train
 _binary=true
 _hidden_dim="256,64"
 _seed=42
-_clip_min=0.1
 
-# ============== Hyperparameter search space (single-element lists for now) ==============
+# ============== Hyperparameter search space ==============
 _lr_list=(0.0005)
 _batch_size_list=(512)
-_l2_reg_list=(1.00e-06)
-_w_reg_list=(0.5000)
+_l2_reg_list=(1e-6)
+_l2_imp_list=(1e-6)
+_w_reg_list=(0.5)
+_w_imp_list=(1.0)
+_clip_min_list=(0.1)
 
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_l2_imp_list[@]} * ${#_w_reg_list[@]} * ${#_w_imp_list[@]} * ${#_clip_min_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
 for _lr in "${_lr_list[@]}"; do
 for _batch_size in "${_batch_size_list[@]}"; do
 for _l2_reg in "${_l2_reg_list[@]}"; do
+for _l2_imp in "${_l2_imp_list[@]}"; do
 for _w_reg in "${_w_reg_list[@]}"; do
+for _w_imp in "${_w_imp_list[@]}"; do
+for _clip_min in "${_clip_min_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_l2imp${_l2_imp}_wreg${_w_reg}_wimp${_w_imp}_clip${_clip_min}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -118,6 +123,8 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --batch_size "$_batch_size" \
         --hidden_dim "$_hidden_dim" \
         --l2_reg "$_l2_reg" \
+        --l2_imp "$_l2_imp" \
+        --w_imp "$_w_imp" \
         --w_reg "$_w_reg" \
         --clip_min "$_clip_min" \
         --num_epochs "$_num_epochs" \
@@ -132,6 +139,9 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --use_tqdm "$use_tqdm" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
+done
+done
+done
 done
 done
 done

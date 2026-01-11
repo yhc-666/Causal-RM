@@ -1,6 +1,6 @@
 #!/bin/bash
 # Grid search script for benchmark_mtips.py (CPU version)
-# Usage: bash scripts/grid_search/mtips.sh --alpha 0.5 --dataset hs
+# Usage: bash scripts/grid_search/mtips.sh --alpha 0.5 --dataset saferlhf
 
 set -e
 
@@ -75,17 +75,18 @@ _monitor_on=train
 _binary=true
 _hidden_dim="256,64"
 _seed=42
-_clip_min=0.1
 
-# ============== Hyperparameter search space (single-element lists for now) ==============
-_lr_list=(0.0005)
-_batch_size_list=(512)
-_l2_reg_list=(1e-7)
-_w_reg_list=(0.05)
+# ============== Hyperparameter search space ==============
+_lr_list=(0.001)
+_batch_size_list=(256)
+_l2_reg_list=(0.0001)
+_w_reg_list=(0.001)
+_w_prop_list=(0.01)
+_clip_min_list=(0.2)
 
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]} * ${#_w_prop_list[@]} * ${#_clip_min_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
@@ -93,11 +94,13 @@ for _lr in "${_lr_list[@]}"; do
 for _batch_size in "${_batch_size_list[@]}"; do
 for _l2_reg in "${_l2_reg_list[@]}"; do
 for _w_reg in "${_w_reg_list[@]}"; do
+for _w_prop in "${_w_prop_list[@]}"; do
+for _clip_min in "${_clip_min_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}_wprop${_w_prop}_clip${_clip_min}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -118,6 +121,7 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --batch_size "$_batch_size" \
         --hidden_dim "$_hidden_dim" \
         --l2_reg "$_l2_reg" \
+        --w_prop "$_w_prop" \
         --w_reg "$_w_reg" \
         --clip_min "$_clip_min" \
         --num_epochs "$_num_epochs" \
@@ -132,6 +136,8 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --use_tqdm "$use_tqdm" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
+done
+done
 done
 done
 done

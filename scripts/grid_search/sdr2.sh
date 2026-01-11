@@ -75,17 +75,21 @@ _monitor_on=train
 _binary=true
 _hidden_dim="256,64"
 _seed=42
-_clip_min=0.1
+_hidden_dim_prop="256,64"
 
-# ============== Hyperparameter search space (single-element lists for now) ==============
-_lr_list=(0.0005)
-_batch_size_list=(512)
-_l2_reg_list=(1e-7)
-_w_reg_list=(0.05)
+# ============== Hyperparameter search space ==============
+_lr_list=(0.001)
+_batch_size_list=(256)
+_l2_reg_list=(1e-5)
+_w_reg_list=(0.001)
+_w_prop_list=(0.05)
+_w_imp_list=(0.01)
+_clip_min_list=(0.1)
+_eta_list=(0.5)
 
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]} * ${#_w_prop_list[@]} * ${#_w_imp_list[@]} * ${#_clip_min_list[@]} * ${#_eta_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
@@ -93,11 +97,15 @@ for _lr in "${_lr_list[@]}"; do
 for _batch_size in "${_batch_size_list[@]}"; do
 for _l2_reg in "${_l2_reg_list[@]}"; do
 for _w_reg in "${_w_reg_list[@]}"; do
+for _w_prop in "${_w_prop_list[@]}"; do
+for _w_imp in "${_w_imp_list[@]}"; do
+for _clip_min in "${_clip_min_list[@]}"; do
+for _eta in "${_eta_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}_wprop${_w_prop}_wimp${_w_imp}_clip${_clip_min}_eta${_eta}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -117,9 +125,15 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --lr "$_lr" \
         --batch_size "$_batch_size" \
         --hidden_dim "$_hidden_dim" \
+        --hidden_dim_prop "$_hidden_dim_prop" \
         --l2_reg "$_l2_reg" \
+        --l2_prop "$_l2_reg" \
+        --l2_imp "$_l2_reg" \
         --w_reg "$_w_reg" \
+        --w_prop "$_w_prop" \
+        --w_imp "$_w_imp" \
         --clip_min "$_clip_min" \
+        --eta "$_eta" \
         --num_epochs "$_num_epochs" \
         --patience "$_patience" \
         --seed "$_seed" \
@@ -132,6 +146,10 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --use_tqdm "$use_tqdm" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
+done
+done
+done
+done
 done
 done
 done

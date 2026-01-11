@@ -1,6 +1,6 @@
 #!/bin/bash
 # Grid search script for benchmark_mtdr.py (CPU version)
-# Usage: bash scripts/grid_search/mtdr.sh --alpha 0.5 --dataset hs
+# Usage: bash scripts/grid_search/mtdr.sh --alpha 0.5 --dataset saferlhf
 
 set -e
 
@@ -75,18 +75,18 @@ _monitor_on=train
 _binary=true
 _hidden_dim="256,64"
 _seed=42
-_clip_min=0.1
 
-# ============== Hyperparameter search space (single-element lists for now) ==============
-_lr_list=(0.0002)
+# ============== Hyperparameter search space ==============
+_lr_list=(0.001)
 _batch_size_list=(256)
-_l2_reg_list=(1e-8)
-_w_reg_list=(1.0)
-_w_prop_list=(2.0)
-_w_imp_list=(2.0)
+_l2_reg_list=(1e-5)
+_w_reg_list=(0.001)
+_w_prop_list=(0.05)
+_w_imp_list=(0.01)
+_clip_min_list=(0.2)
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]} * ${#_w_prop_list[@]} * ${#_w_imp_list[@]} * ${#_clip_min_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
@@ -96,11 +96,12 @@ for _l2_reg in "${_l2_reg_list[@]}"; do
 for _w_reg in "${_w_reg_list[@]}"; do
 for _w_prop in "${_w_prop_list[@]}"; do
 for _w_imp in "${_w_imp_list[@]}"; do
+for _clip_min in "${_clip_min_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}_wprop${_w_prop}_wimp${_w_imp}_clip${_clip_min}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -137,6 +138,7 @@ for _w_imp in "${_w_imp_list[@]}"; do
         --w_imp "$_w_imp" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
+done
 done
 done
 done

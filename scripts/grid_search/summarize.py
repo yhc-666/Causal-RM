@@ -6,7 +6,7 @@ Summarizes grid search results across different models and datasets.
 Finds the best hyperparameters based on a specified metric.
 
 Usage:
-    python scripts/grid_search/summarize.py --model ips --metric "R2 on test" --top 5
+    python scripts/grid_search/summarize.py --model bpr --metric "R2 on test" --top 5
     python scripts/grid_search/summarize.py --results_dir results/grid_search/naive --metric "AUROC on test"
 """
 
@@ -23,12 +23,40 @@ DISPLAY_METRICS = ["R2 on test", "AUROC on test", "MAE on test", "RMSE on test"]
 DISPLAY_CONFIG_KEYS = [
     "lr",
     "batch_size",
+    "batch_size_point",
+    "batch_size_pair",
+    "batch_size_ipm",
+    "num_neg",
+    "class_prior",
+    "clip_min",
     "l2_reg",
+    "l2_imp",
+    "l2_prop",
     "w_reg",
+    "w_imp",
+    "w_prop",
+    "eta",
+    "lambda_point",
+    "lambda_pair",
+    "lambda_ipm",
+    "ipm_lam",
+    "ipm_its",
+    "ipm_p",
+    "target_percentile",
+    "hn_percentile",
+    "ocsvm_batch_size",
+    "pair_max_dp_he",
+    "pair_max_un_he",
+    "pair_max_hu_un",
     "lamp",
     "calibration_sharpen_k",
     "alpha",
     "hidden_dim",
+    "variant",
+    "pred_target",
+    "calibration",
+    "calibration_fit_on",
+    "pscore_source",
 ]
 
 

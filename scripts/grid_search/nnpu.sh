@@ -75,18 +75,32 @@ _monitor_on=train
 _binary=true
 _hidden_dim="256,64"
 _seed=42
-_clip_min=0.1
-_class_prior=0.693  # Default for hs dataset
 
-# ============== Hyperparameter search space (single-element lists for now) ==============
-_lr_list=(0.0005)
-_batch_size_list=(512)
-_l2_reg_list=(1e-7)
-_w_reg_list=(0.05)
+# ============== Hyperparameter search space ==============
+_lr_list=(0.0001 0.0002 0.0005 0.001)
+_batch_size_list=(256 512 1024)
+_l2_reg_list=(1e-7 1e-6 1e-5)
+_w_reg_list=(0.1 0.5 1.0)
+
+# class_prior (dataset-specific)
+case "$DATASET" in
+    hs)
+        _class_prior_list=(0.55 0.65 0.693 0.75)
+        ;;
+    saferlhf)
+        _class_prior_list=(0.35 0.4 0.455 0.5)
+        ;;
+    ufb)
+        _class_prior_list=(0.4 0.5 0.6)
+        ;;
+    *)
+        _class_prior_list=(0.4 0.5 0.6)
+        ;;
+esac
 
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_w_reg_list[@]} * ${#_class_prior_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
@@ -94,11 +108,12 @@ for _lr in "${_lr_list[@]}"; do
 for _batch_size in "${_batch_size_list[@]}"; do
 for _l2_reg in "${_l2_reg_list[@]}"; do
 for _w_reg in "${_w_reg_list[@]}"; do
+for _class_prior in "${_class_prior_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_wreg${_w_reg}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_cp${_class_prior}_l2${_l2_reg}_wreg${_w_reg}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -120,7 +135,6 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --hidden_dim "$_hidden_dim" \
         --l2_reg "$_l2_reg" \
         --w_reg "$_w_reg" \
-        --clip_min "$_clip_min" \
         --class_prior "$_class_prior" \
         --num_epochs "$_num_epochs" \
         --patience "$_patience" \
@@ -134,6 +148,7 @@ for _w_reg in "${_w_reg_list[@]}"; do
         --use_tqdm "$use_tqdm" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
+done
 done
 done
 done
