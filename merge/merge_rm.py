@@ -1,3 +1,41 @@
+"""
+Merge trained RM model weights into the source LLM model.
+
+Usage:
+    # Merge naive model trained on saferlhf
+    python merge/merge_rm.py \
+        --src_model_dir /path/to/FsfairX-LLaMA3-RM-v0.1 \
+        --src_model_class llama \
+        --rm_model_dir ./results/cache/naive/saferlhf \
+        --rm_model_class naive \
+        --output_dir /path/to/output/Naive-RM-saferlhf
+
+    # Merge recrec model trained on hs
+    python merge/merge_rm.py \
+        --src_model_dir /path/to/FsfairX-LLaMA3-RM-v0.1 \
+        --src_model_class llama \
+        --rm_model_dir ./results/cache/recrec_f/hs \
+        --rm_model_class recrec \
+        --output_dir /path/to/output/ReCRec-RM-hs
+
+Arguments:
+    --src_model_dir   : Path to the source LLM model (e.g., FsfairX-LLaMA3-RM-v0.1)
+    --src_model_class : Model architecture type (e.g., "llama")
+    --rm_model_dir    : Path to trained RM model directory (e.g., results/cache/naive/saferlhf)
+    --rm_model_class  : RM model type, one of:
+                        - Debias models: naive, ips, dr, mtdr, mtips, sdr2
+                        - Debias-PU models: recrec, counterif
+                        - PU models: bpr, ubpr, cubpr, nnpu, upu, uprl, rmf, ncrmf
+    --output_dir      : Path to save the merged model
+
+Output:
+    The merged model will be saved to output_dir with:
+    - All original LLM files
+    - myrm.safetensors (RM model weights)
+    - Updated config.json with RM configuration
+    - configuration_myrm.py and modeling_myrm.py templates
+"""
+
 import os
 import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -11,6 +49,30 @@ import yaml
 
 from argparse import ArgumentParser
 from safetensors.torch import load_file, save_file
+
+
+# Mapping from rm_model_class to the directory containing the benchmark script
+MODEL_DIR_MAP = {
+    # Debias models (models_debias/)
+    "naive": "models_debias",
+    "ips": "models_debias",
+    "dr": "models_debias",
+    "mtdr": "models_debias",
+    "mtips": "models_debias",
+    "sdr2": "models_debias",
+    # Debias-PU models (models_debias_pu/)
+    "recrec": "models_debias_pu",
+    "counterif": "models_debias_pu",
+    # PU models (models_pu/)
+    "bpr": "models_pu",
+    "ubpr": "models_pu",
+    "cubpr": "models_pu",
+    "nnpu": "models_pu",
+    "upu": "models_pu",
+    "uprl": "models_pu",
+    "rmf": "models_pu",
+    "ncrmf": "models_pu",
+}
 
 
 def parse_arguments():
@@ -70,7 +132,11 @@ def main():
     rm_model_config["hidden_dim_str"] = rm_model_config["hidden_dim"]
 
     # load rm model
-    rm_model_class = load_class_from_file(f"{ROOT}/causal-rm/benchmark_{args.rm_model_class}.py", "Model")
+    model_dir = MODEL_DIR_MAP.get(args.rm_model_class)
+    if model_dir is None:
+        raise ValueError(f"Unknown rm_model_class: {args.rm_model_class}. "
+                         f"Available options: {list(MODEL_DIR_MAP.keys())}")
+    rm_model_class = load_class_from_file(f"{ROOT}/{model_dir}/benchmark_{args.rm_model_class}.py", "Model")
     rm_model = build_from_config(rm_model_class, rm_model_config)
     rm_model.load_state_dict(torch.load(os.path.join(args.rm_model_dir, "best_model.pth"), map_location="cpu"))
     state_dict = rm_model.state_dict()
