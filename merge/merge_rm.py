@@ -150,6 +150,13 @@ def main():
         "AutoModelForTokenClassification": "modeling_myrm.MyRMForTokenClassification"
     }
     src_model_config["_name_or_path"] = args.output_dir
+
+    # 修改 model_type, architectures, num_labels 以支持 VERL 加载
+    # VERL 使用 AutoModelForTokenClassification.from_pretrained() 加载 RM
+    src_model_config["model_type"] = "myrm"
+    src_model_config["architectures"] = ["MyRMForTokenClassification"]
+    src_model_config["num_labels"] = 1
+
     json.dump(src_model_config, open(os.path.join(args.output_dir, "config.json"), "w"), indent=2, sort_keys=True)
 
     # save index
