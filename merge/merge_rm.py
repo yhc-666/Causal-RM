@@ -3,12 +3,12 @@ Merge trained RM model weights into the source LLM model.
 
 Usage:
     # Merge naive model trained on saferlhf
-    python merge/merge_rm.py \
-        --src_model_dir /path/to/FsfairX-LLaMA3-RM-v0.1 \
+    python3 merge/merge_rm.py \
+        --src_model_dir /mnt/dolphinfs/hdd_pool/docker/user/hadoop-mtsearch-assistant/ai-search/yanghaocheng04/huggingface.co/sfairXC/FsfairX-LLaMA3-RM-v0.1 \
         --src_model_class llama \
         --rm_model_dir ./results/cache/naive/saferlhf \
         --rm_model_class naive \
-        --output_dir /path/to/output/Naive-RM-saferlhf
+        --output_dir Causal-RM/merged_model/Naive-RM-saferlhf
 
     # Merge recrec model trained on hs
     python merge/merge_rm.py \
