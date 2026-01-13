@@ -71,18 +71,26 @@ desc=cubpr
 use_tqdm=false
 _num_epochs=200
 _patience=20
-_monitor_on=train
+_monitor_on=val
 _binary=true
 _hidden_dim="256,64"
 _seed=42
 
 # ============== Hyperparameter search space ==============
-_lr_list=(0.0001 0.0002 0.0005 0.001)
+# ufb
+_lr_list=(0.00001 0.00005 0.0001 0.001)
 _batch_size_list=(256 512 1024)
-_l2_reg_list=(1e-7 1e-6 1e-5)
-_w_reg_list=(0.1 0.5 1.0)
-_num_neg_list=(5 10 20)
+_l2_reg_list=(1e-8 1e-7 1e-6 5e-6 1e-5 5e-4 1e-3 1e-2)
+_w_reg_list=(0.005 0.01 0.05 0.1 0.5 1)
+_num_neg_list=(1)
 _clip_min_list=(0.05 0.1 0.2)
+
+# _lr_list=(1.00e-06)
+# _batch_size_list=(512)
+# _l2_reg_list=(1e-6)
+# _w_reg_list=(0.05)
+# _num_neg_list=(1)
+# _clip_min_list=(0.2)
 
 # ============== Grid search ==============
 job_number=0

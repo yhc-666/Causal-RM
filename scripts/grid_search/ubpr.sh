@@ -7,7 +7,7 @@ set -e
 # ============== Parse command line arguments ==============
 ALPHA=0.5
 DATASET=hs
-MAX_JOBS=20
+MAX_JOBS=10
 RERUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -71,18 +71,24 @@ desc=ubpr
 use_tqdm=false
 _num_epochs=200
 _patience=20
-_monitor_on=train
+_monitor_on=val
 _binary=true
 _hidden_dim="256,64"
 _seed=42
 
 # ============== Hyperparameter search space ==============
-_lr_list=(0.0002 0.0005 0.001)
-_batch_size_list=(256 512)
-_l2_reg_list=(2e-8 2e-4 2e-3 1e-2)
-_w_reg_list=(0.005 0.01 0.05 0.1 0.5 1)
-_num_neg_list=(1 5)
-_clip_min_list=(0.05 0.1 0.2)
+# _lr_list=(0.0000001 0.000001 0.00001 0.00005)
+# _batch_size_list=(256 512)
+# _l2_reg_list=(1e-6 5e-6 1e-5 2e-4)
+# _w_reg_list=(0.005 0.01 0.05 0.1 0.5 1)
+# _num_neg_list=(1)
+# _clip_min_list=(0.05 0.1 0.2)
+_lr_list=(1.00e-06)
+_batch_size_list=(512)
+_l2_reg_list=(1e-6)
+_w_reg_list=(0.05)
+_num_neg_list=(1)
+_clip_min_list=(0.2)
 
 
 

@@ -1,13 +1,13 @@
 #!/bin/bash
 # Grid search script for benchmark_bpr.py (CPU version)
-# Usage: bash scripts/grid_search/bpr.sh --alpha 0.5 --dataset hs
+# Usage: bash scripts/grid_search/bpr.sh --alpha 0.5 --dataset ufb
 
 set -e
 
 # ============== Parse command line arguments ==============
 ALPHA=0.5
 DATASET=hs
-MAX_JOBS=20
+MAX_JOBS=2
 RERUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -71,17 +71,18 @@ desc=bpr
 use_tqdm=false
 _num_epochs=200
 _patience=20
-_monitor_on=train
+_monitor_on=val
 _binary=true
 _hidden_dim="256,64"
 _seed=42
 
 # ============== Hyperparameter search space ==============
-_lr_list=(0.0005)
-_batch_size_list=(512)
-_l2_reg_list=(5e-3)
-_w_reg_list=(0.01)
+_lr_list=(0.00001 0.00005 0.0001 0.001)
+_batch_size_list=(256 512 1024)
+_l2_reg_list=(1e-7 1e-6 5e-6 1e-5 5e-4 1e-3 1e-2)
+_w_reg_list=(0.01 0.05 0.1 0.5 1)
 _num_neg_list=(1)
+_clip_min_list=(0.05 0.1 0.2)
 
 # ============== Grid search ==============
 job_number=0

@@ -123,10 +123,10 @@ def parse_arguments():
 def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
     """
     Train reward model using non-negative PU (NNPU) learning loss:
-    L = π * mean(|loss_pp - loss_pn|) + mean(loss_un)
+    L = π * mean(loss_pp) + max(0, mean(loss_un) - π * mean(loss_pn))
 
-    This prevents the loss from going negative by using absolute difference.
-    More stable when class prior is misspecified or model is overconfident.
+    This is the standard NNPU formulation that clips the negative risk term
+    to prevent the loss from going negative, which can cause training instability.
 
     Where:
         - loss_pp = BCE(positive samples, target=1) - predicting positives as positive
@@ -166,9 +166,11 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
                 loss_pp = criterion(pos_pred, torch.ones_like(pos_pred))
                 # loss_pn: loss for classifying positives as negative (target=0)
                 loss_pn = criterion(pos_pred, torch.zeros_like(pos_pred))
-                loss_pos = torch.abs(loss_pp - loss_pn).mean()
+                loss_pp_mean = loss_pp.mean()
+                loss_pn_mean = loss_pn.mean()
             else:
-                loss_pos = torch.tensor(0.0, device=batch_X.device)
+                loss_pp_mean = torch.tensor(0.0, device=batch_X.device)
+                loss_pn_mean = torch.tensor(0.0, device=batch_X.device)
 
             # Compute loss on unlabeled/negative samples
             if neg_mask.sum() > 0:
@@ -178,8 +180,8 @@ def train(model, train_loader, optimizer, num_epochs, val_data, patience, args):
             else:
                 loss_un = torch.tensor(0.0, device=batch_X.device)
 
-            # Non-negative PU loss (legacy baseline): π * mean(|loss_pp - loss_pn|) + mean(loss_un)
-            loss = args.class_prior * loss_pos + loss_un
+            # Standard NNPU loss: π * mean(loss_pp) + max(0, mean(loss_un) - π * mean(loss_pn))
+            loss = args.class_prior * loss_pp_mean + torch.clamp(loss_un - args.class_prior * loss_pn_mean, min=0.0)
 
             # Apply task weight
             weighted_loss = args.w_reg * loss

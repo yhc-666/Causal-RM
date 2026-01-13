@@ -1,6 +1,6 @@
 #!/bin/bash
 # Grid search script for benchmark_upu.py (CPU version)
-# Usage: bash scripts/grid_search/upu.sh --alpha 0.5 --dataset hs
+# Usage: bash scripts/grid_search/upu.sh --alpha 0.5 --dataset saferlhf
 
 set -e
 
@@ -71,24 +71,41 @@ desc=upu
 use_tqdm=false
 _num_epochs=200
 _patience=20
-_monitor_on=train
+_monitor_on=val
 _binary=true
 _hidden_dim="256,64"
 _seed=42
 
 # ============== Hyperparameter search space ==============
-_lr_list=(0.0001 0.0002 0.0005 0.001)
-_batch_size_list=(256 512 1024)
-_l2_reg_list=(1e-7 1e-6 1e-5)
-_w_reg_list=(0.1 0.5 1.0)
+# hs
+# _lr_list=(0.001)
+# _batch_size_list=(1024)
+# _l2_reg_list=(5e-6)
+# _w_reg_list=(5.0)
+
+_lr_list=(3e-5)
+_batch_size_list=(512)
+_l2_reg_list=(5e-8)
+_w_reg_list=(0.2)
+
+# ': 3.0576430792269485e-05, 'l2_reg': 4.4207730775104035e-08, 'batch_size': 512, 
+# 'w_reg': 0.2, 'class_prior': 0.3134932118555546}. Best is trial 1 with value: 0.58232182264328.
+
+# {"lr": 0.0011251526432868048, "l2_reg": 5.1129977697891415e-06, 
+# "batch_size": 1024, "w_reg": 5.0, "class_prior": 0.7339264032494118}
+
+# _lr_list=(0.0001 0.0002 0.0005 0.001)
+# _batch_size_list=(256 512 1024)
+# _l2_reg_list=(1e-7 1e-6 1e-5)
+# _w_reg_list=(0.1 0.5 1.0)
 
 # class_prior (dataset-specific)
 case "$DATASET" in
     hs)
-        _class_prior_list=(0.55 0.65 0.693 0.75)
+        _class_prior_list=(0.73)
         ;;
     saferlhf)
-        _class_prior_list=(0.35 0.4 0.455 0.5)
+        _class_prior_list=(0.31349)
         ;;
     ufb)
         _class_prior_list=(0.4 0.5 0.6)

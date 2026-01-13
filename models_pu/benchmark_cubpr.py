@@ -30,26 +30,6 @@ from tools.utils import (
 )
 
 
-def calculate_propensity(labels, alpha, target_observation_rate=0.2):
-    """
-    Copy from simulate_bias_pu.py (do not import/modify simulate_bias_pu.py).
-    """
-    propensity = np.ones_like(labels)
-    labels = 1 + (labels - labels.min()) * 4 / (labels.max() - labels.min())
-
-    mask_lt_4 = labels < labels.max()
-    propensity[mask_lt_4] = alpha ** (labels.max() - labels[mask_lt_4])
-
-    mask_ge_4 = labels >= labels.max()
-    propensity[mask_ge_4] = 1.0
-
-    expected_observations = target_observation_rate * len(labels)
-    k = expected_observations / np.sum(propensity)
-    propensity = propensity * k
-
-    return propensity
-
-
 class Model(nn.Module):
     def __init__(self, input_size, hidden_dim_str):
         super(Model, self).__init__()
@@ -68,7 +48,7 @@ class Model(nn.Module):
 
 def parse_arguments():
     pre_parser = ArgumentParser(add_help=False)
-    pre_parser.add_argument("--data_name", type=str, default="hs")
+    pre_parser.add_argument("--data_name", type=str, default="saferlhf")
     pre_args, _ = pre_parser.parse_known_args()
 
     base_defaults = {
@@ -79,18 +59,18 @@ def parse_arguments():
         "model_name": "FsfairX-LLaMA3-RM-v0.1",
         "estimator_name": "cubpr",
         "data_name": pre_args.data_name,
-        "alpha": 0.2,
+        "alpha": 0.5,
         "lr": 0.0002,
-        "clip_min": 0.1,
+        "clip_min": 0.3,
         "num_epochs": 200,
-        "batch_size": 512,  # number of positive-i per step
-        "num_neg": 10,  # number of j samples per i
+        "batch_size": 128,  # number of positive-i per step
+        "num_neg": 2,  # number of j samples per i
         "hidden_dim": "256,64",
         "patience": 20,
         "seed": 42,
         "l2_reg": 1e-6,
         "w_reg": 1.0,
-        "rerun": False,
+        "rerun": True,
         "monitor_on": "val",
         "binary": True,
         "use_tqdm": True,
@@ -98,14 +78,14 @@ def parse_arguments():
 
     dataset_defaults = {
         "saferlhf": {
-            "alpha": 0.2,
-            "batch_size": 512,
+            "alpha": 0.5,
+            "batch_size": 128,
             "lr": 0.0005,
-            "l2_reg": 1e-6,
-            "w_reg": 1.0,
+            "l2_reg": 5e-1,
+            "w_reg": 0.05,
         },
         "hs": {
-            "alpha": 0.2,
+            "alpha": 0.5,
             "batch_size": 512,
             "lr": 0.0005,
             "l2_reg": 1e-5,
@@ -370,6 +350,7 @@ def main():
             y_train_full,
             mask_train,
             user_id_train,
+            propensity_train,
             X_val_full,
             y_val_full,
             y_val_true,
@@ -384,6 +365,7 @@ def main():
                 "y_train_binary",
                 "mask_train",
                 "user_id_train",
+                "propensity_train",
                 "X_val",
                 "y_val_binary",
                 "y_val_binary_true",
@@ -394,15 +376,12 @@ def main():
         )
     except KeyError as e:
         raise KeyError(
-            f"{embedding_file} is missing `user_id_train`. Please rerun Stage 1/2 to generate user_id fields."
+            f"{embedding_file} is missing required fields. Please rerun Stage 1/2 to generate user_id and propensity fields."
         ) from e
 
     print(f"Training on {X_train_full.shape[0]} samples (user-wise pairwise).")
     print(f"Validating on {X_val_full.shape[0]} samples.")
     print(f"Testing on {X_test.shape[0]} samples.")
-
-    propensity_train_np = calculate_propensity(y_train_full.detach().cpu().numpy(), args.alpha)
-    propensity_train = torch.from_numpy(propensity_train_np).to(device=device, dtype=torch.float32)
 
     val_data = (X_val_full, y_val_full, mask_val.float())
     val_data_true = (X_val_full, y_val_true, mask_val.float())

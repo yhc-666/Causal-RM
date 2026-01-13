@@ -78,16 +78,16 @@ _seed=42
 
 # ============== Hyperparameter search space ==============
 # lr: 0.0001 - 0.01
-_lr_list=(0.0002)
+_lr_list=(0.0005)
 
 # batch_size
-_batch_size_list=(512)
+_batch_size_list=(1024)
 
-# l2_reg
-_l2_reg_list=(1e-7)
+# l2_reg    
+_l2_reg_list=(1.0e-06)
 
 # w_reg (task weight)
-_w_reg_list=(0.0100)
+_w_reg_list=(0.2)
 
 # ============== Grid search ==============
 job_number=0

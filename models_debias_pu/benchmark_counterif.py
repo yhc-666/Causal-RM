@@ -358,7 +358,7 @@ def parse_arguments():
     }
 
     dataset_defaults = {
-        "hs": {"alpha": 0.2, "lr": 5e-4},
+        "hs": {"alpha": 0.5, "lr": 5e-4},
         "saferlhf": {"alpha": 0.2, "lr": 5e-4},
         "ufb": {"alpha": 0.2, "lr": 5e-4},
     }

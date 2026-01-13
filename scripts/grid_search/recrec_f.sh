@@ -1,6 +1,6 @@
 #!/bin/bash
 # Grid search script for models_debias_pu/benchmark_recrec.py (ReCRec-F, CPU)
-# Usage: bash scripts/grid_search/recrec_f.sh --alpha 0.5 --dataset hs
+# Usage: bash scripts/grid_search/recrec_f.sh --alpha 0.5 --dataset saferlhf
 
 set -e
 
@@ -84,15 +84,15 @@ if [ ! -f "$BIAS_PU_FILE" ]; then
     exit 1
 fi
 
-# ============== Fixed parameters (aligned with other grid_search scripts) ==============
+# ============== Fixed parameters (from benchmark_recrec.py hs alpha=0.5 defaults) ==============
 desc=recrec_f
 use_tqdm=false
-_num_epochs=200
+_num_epochs=120
 _patience=20
-_eval_every=1
-_monitor_on=train
+_eval_every=2
+_monitor_on=val
 _binary=true
-_hidden_dim="256,64"  # fixed (do not tune)
+_hidden_dim="256,64"
 _seed=42
 
 # ReCRec defaults (keep consistent with the original implementation)
@@ -111,21 +111,13 @@ _user_embed_dim=32
 _subsample_train=0
 _subsample_val=0
 
-# ============== Hyperparameter search space ==============
-# lr
-_lr_list=(0.00001 0.00003 0.0001 0.0003 0.001 0.01)
-
-# batch_size
-_batch_size_list=(256 512 1024)
-
-# l2_reg
-_l2_reg_list=(1e-8 1e-7 1e-6 1e-5)
-
-# lamp (ReCRec-F: mu~pscore regularization weight)
-_lamp_list=(0.0 0.01 0.03 0.1 0.3)
-
-# post-calibration sharpening (k>=1)
-_sharpen_k_list=(1.0 1.1 1.3 1.5 2.5 4)
+# ============== Hyperparameter search space (from benchmark_recrec.py hs alpha=0.5 defaults) ==============
+# hs
+_lr_list=(5e-06)
+_batch_size_list=(512)
+_l2_reg_list=(3.00e-07)
+_lamp_list=(0.02)
+_sharpen_k_list=(1.00)
 
 # ============== Grid search ==============
 job_number=0
