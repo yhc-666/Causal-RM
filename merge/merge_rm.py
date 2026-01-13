@@ -121,7 +121,7 @@ def main():
     shutil.copytree(args.src_model_dir, args.output_dir, dirs_exist_ok=True)
 
     # copy rm template
-    rm_template_dir = os.path.join(ROOT, "template", args.src_model_class)
+    rm_template_dir = os.path.join(ROOT, "merge/template", args.src_model_class)
     for filename in ["configuration_myrm.py", "modeling_myrm.py"]:
         shutil.copy2(os.path.join(rm_template_dir, filename), os.path.join(args.output_dir, filename))
 
