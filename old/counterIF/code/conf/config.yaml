@@ -1,6 +1,0 @@
-batch_size: 4096
-max_iters: 1000
-model_name: 'Ours'
-run_sims: 1
-data: 'yahoo'
-sample_times: 1
