@@ -43,7 +43,7 @@ NUM_EPOCHS=200
 PATIENCE=20
 SEED=42
 BINARY=true
-MONITOR_ON=train
+MONITOR_ON=val
 
 echo "============================================"
 echo "Running Naive Model with Tuned Parameters"
@@ -92,11 +92,11 @@ run_saferlhf() {
     python -u models_debias/benchmark_naive.py \
         --data_name saferlhf \
         --alpha $ALPHA \
-        --lr 0.0005 \
-        --batch_size 1024 \
+        --lr 0.0002 \
+        --batch_size 512 \
         --hidden_dim "$HIDDEN_DIM" \
-        --l2_reg 1e-05 \
-        --w_reg 0.01 \
+        --l2_reg 0.5 \
+        --w_reg 1.0 \
         --num_epochs $NUM_EPOCHS \
         --patience $PATIENCE \
         --seed $SEED \
