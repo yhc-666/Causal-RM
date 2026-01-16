@@ -232,7 +232,7 @@ python models_debias/benchmark_dr.py --data_name saferlhf --alpha 0.1
 python models_debias_pu/benchmark_counterif.py --data_name hs --alpha 0.2
 
 # ReCRec-F (debias + PU)
-python models_debias_pu/benchmark_recrec.py --data_name hs --alpha 0.2 --variant F
+python models_debias_pu/benchmark_recrec.py --data_name hs --alpha 0.2
 ```
 
 ### 通用参数 (`models_*/benchmark_*.py`)

@@ -6,7 +6,7 @@ Runs datasets in order: hs, saferlhf, ufb (configurable).
 
 Usage:
     python scripts/optuna/tune_recrec_f.py
-    python scripts/optuna/tune_recrec_f.py --datasets hs,saferlhf,ufb --n_trials 300
+    python scripts/optuna/tune_recrec_f.py --datasets saferlhf,ufb --n_trials 300
     python scripts/optuna/tune_recrec_f.py --alpha 0.2 --resume
 """
 
@@ -41,11 +41,9 @@ def _suggest_params(trial: optuna.Trial) -> dict:
     """Suggest hyperparameters for ReCRec-F model."""
     return {
         "lr": float(trial.suggest_categorical("lr", [5e-7, 1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3])),
-        "l2_reg": float(trial.suggest_categorical("l2_reg", [1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 1e-1, 2e-1, 5e-1])),
+        "l2_reg": float(trial.suggest_categorical("l2_reg", [1e-7, 2e-7, 5e-7, 1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 1e-2, 2e-2, 5e-2, 1e-1, 2e-1, 5e-1])),
         "batch_size": int(trial.suggest_categorical("batch_size", [128, 256, 512, 1024, 2048])),
-        "lamp": float(trial.suggest_categorical("lamp", [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0])),
         "calibration_sharpen_k": float(trial.suggest_categorical("calibration_sharpen_k", [1.0, 1.1, 1.2, 1.5, 2.0, 2.5])),
-        "user_embed_dim": int(trial.suggest_categorical("user_embed_dim", [16, 32, 64])),
     }
 
 
@@ -86,10 +84,7 @@ def _make_base_cmd(args, *, work_dir: str) -> list[str]:
         "--patience", str(args.patience),
         "--monitor_on", "val",
         # ReCRec-F specific fixed parameters
-        "--variant", "F",
-        "--pred_target", "gamma",
         "--calibration", "isotonic",
-        "--use_user_id", "True",
     ]
 
 

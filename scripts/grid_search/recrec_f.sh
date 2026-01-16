@@ -96,18 +96,9 @@ _hidden_dim="256,64"
 _seed=42
 
 # ReCRec defaults (keep consistent with the original implementation)
-_variant="F"
-_pscore_source="popularity"
-_pscore_clip_min=1e-6
-_pscore_clip_max=1.0
-_pred_target="gamma"
 _calibration="isotonic"
 _calibration_fit_on="val_true"
 _eps=1e-6
-_use_exposure=false
-_use_user_id=true
-_user_bucket_size=200000
-_user_embed_dim=32
 _subsample_train=0
 _subsample_val=0
 
@@ -116,25 +107,23 @@ _subsample_val=0
 _lr_list=(5e-06)
 _batch_size_list=(512)
 _l2_reg_list=(3.00e-07)
-_lamp_list=(0.02)
 _sharpen_k_list=(1.00)
 
 # ============== Grid search ==============
 job_number=0
-total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_lamp_list[@]} * ${#_sharpen_k_list[@]}))
+total_combinations=$((${#_lr_list[@]} * ${#_batch_size_list[@]} * ${#_l2_reg_list[@]} * ${#_sharpen_k_list[@]}))
 echo "Total hyperparameter combinations: $total_combinations"
 echo ""
 
 for _lr in "${_lr_list[@]}"; do
 for _batch_size in "${_batch_size_list[@]}"; do
 for _l2_reg in "${_l2_reg_list[@]}"; do
-for _lamp in "${_lamp_list[@]}"; do
 for _k in "${_sharpen_k_list[@]}"; do
     check_jobs
     ((job_number++))
 
     # Build output directory name from parameters
-    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_lamp${_lamp}_k${_k}"
+    EXP_DIR="${DATASET}_alpha${ALPHA}_lr${_lr}_bs${_batch_size}_l2${_l2_reg}_k${_k}"
     OUTPUT_DIR="$ROOT/$EXP_DIR"
     mkdir -p "$OUTPUT_DIR"
 
@@ -151,13 +140,11 @@ for _k in "${_sharpen_k_list[@]}"; do
         --desc "$desc" \
         --data_name "$DATASET" \
         --alpha "$ALPHA" \
-        --variant "$_variant" \
         --model_name "$MODEL_NAME" \
         --lr "$_lr" \
         --batch_size "$_batch_size" \
         --hidden_dim "$_hidden_dim" \
         --l2_reg "$_l2_reg" \
-        --lamp "$_lamp" \
         --calibration_sharpen_k "$_k" \
         --num_epochs "$_num_epochs" \
         --patience "$_patience" \
@@ -165,19 +152,11 @@ for _k in "${_sharpen_k_list[@]}"; do
         --seed "$_seed" \
         --monitor_on "$_monitor_on" \
         --binary "$_binary" \
-        --pred_target "$_pred_target" \
         --calibration "$_calibration" \
         --calibration_fit_on "$_calibration_fit_on" \
         --eps "$_eps" \
-        --use_exposure "$_use_exposure" \
-        --use_user_id "$_use_user_id" \
-        --user_bucket_size "$_user_bucket_size" \
-        --user_embed_dim "$_user_embed_dim" \
         --subsample_train "$_subsample_train" \
         --subsample_val "$_subsample_val" \
-        --pscore_source "$_pscore_source" \
-        --pscore_clip_min "$_pscore_clip_min" \
-        --pscore_clip_max "$_pscore_clip_max" \
         --data_root "$DATA_ROOT" \
         --output_dir "$OUTPUT_DIR" \
         --rerun "$RERUN" \
@@ -185,7 +164,6 @@ for _k in "${_sharpen_k_list[@]}"; do
         --use_tqdm "$use_tqdm" \
         > "$OUTPUT_DIR/stdout.log" 2>&1 &
 
-done
 done
 done
 done
